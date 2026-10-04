@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: lost-temple-private-room
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: online
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /
+    autoDeployTrigger: commit
