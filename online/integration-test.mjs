@@ -6,7 +6,7 @@ const host = io(url, { forceNew: true });
 const guest = io(url, { forceNew: true });
 
 const once = (socket, event) => new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error(`等待 ${event} 逾時`)), 3000);
+  const timer = setTimeout(() => reject(new Error(`等待 ${event} 逾時`)), 7000);
   socket.once(event, value => { clearTimeout(timer); resolve(value); });
 });
 const emitAck = (socket, event, data) => new Promise(resolve => socket.emit(event, data, resolve));
@@ -48,6 +48,8 @@ try {
   const [hostRound, guestRound] = await Promise.all([hostStart, guestStart]);
   assert.equal(hostRound.layoutId, 12);
   assert.equal(guestRound.layoutId, 12);
+  assert.equal(hostRound.countdownMs, 3500);
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, hostRound.startsAt - Date.now() + 50)));
 
   const hostEnd = once(host, "round:end");
   const guestEnd = once(guest, "round:end");

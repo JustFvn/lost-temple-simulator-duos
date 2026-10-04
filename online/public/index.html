@@ -340,6 +340,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .player-list{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.player-seat{border:1px solid var(--line);border-radius:4px;padding:10px;background:var(--sunken)}.player-seat.empty{opacity:.55}
 .host-settings{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}.setting-row{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--ink-dim)}.setting-check{display:flex;align-items:center;gap:8px;padding-top:20px;font-size:13px}
 .lobby-message{min-height:1.4em;margin:10px 0 0;color:var(--clay);font-size:12px}.online-badge{font-size:11px;color:var(--jade)}
+.countdown{position:absolute;inset:0;z-index:4;display:grid;place-items:center;pointer-events:none;background:rgba(8,12,10,.36);font-family:var(--display);font-size:clamp(72px,18vw,132px);font-weight:800;color:var(--gold);text-shadow:0 4px 24px rgba(0,0,0,.55)}
+.countdown[hidden]{display:none}.countdown.go{font-size:clamp(42px,10vw,76px);color:var(--jade)}
 @media(max-width:560px){.host-settings,.player-list{grid-template-columns:1fr}.lobby-grid{grid-template-columns:1fr}.setting-check{padding-top:4px}}
 </style>
 </head>
@@ -365,7 +367,7 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
       <div id="entryPane">
         <h2>建立或加入私人房</h2>
         <p class="hint">兩人各自在瀏覽器開啟這個網址，由主辦者建立六碼房號。</p>
-        <div class="lobby-grid"><input id="playerName" maxlength="16" placeholder="你的名稱" value="玩家"><button class="btn btn-gold" id="createRoom">建立房間</button></div>
+        <div class="lobby-grid"><input id="playerName" maxlength="16" placeholder="先輸入你的名稱"><button class="btn btn-gold" id="createRoom">建立房間</button></div>
         <div class="lobby-grid"><input id="joinCode" maxlength="6" placeholder="輸入六碼房號"><button class="btn" id="joinRoom">加入房間</button></div>
       </div>
       <div id="roomPane" hidden>
@@ -416,6 +418,7 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 
   <main class="arena">
     <canvas id="board"></canvas>
+    <div class="countdown" id="countdown" hidden aria-live="assertive">3</div>
     <div class="veil" id="veil">
       <div>
         <div class="veil-kicker">暫停</div>
@@ -1232,6 +1235,7 @@ function frame(now) {
   const dt = Math.min((now - last) / 1000, 1 / 30);
   last = now;
   syncBoardTheme();
+  updateCountdown();
   if (net.playing && !run.paused && !run.done && Date.now() >= net.startsAt) {
     if (!run.running) { run.running = true; run.started = now; }
     step(dt);
@@ -1241,6 +1245,23 @@ function frame(now) {
   render();
   if (run.running) $("#clock").textContent = fmt(run.elapsed + (now - run.started));
   requestAnimationFrame(frame);
+}
+
+function updateCountdown() {
+  const el = $("#countdown");
+  if (!net.playing || run.done) { el.hidden = true; return; }
+  const remaining = net.startsAt - Date.now();
+  if (remaining > 0) {
+    el.hidden = false;
+    el.classList.remove("go");
+    el.textContent = Math.min(3, Math.ceil(remaining / 1000));
+  } else if (remaining > -650) {
+    el.hidden = false;
+    el.classList.add("go");
+    el.textContent = "開始！";
+  } else {
+    el.hidden = true;
+  }
 }
 
 function step(dt) {
@@ -1319,7 +1340,10 @@ function trackRoom(p, playerIndex) {
   syncStatus();
   if (i === GOAL_I && !net.goalSent) {
     net.goalSent = true;
-    net.socket.emit("goal:reached", { x: p.x, y: p.y });
+    // 先同步最後位置，再送終點事件，避免伺服器仍拿到上一幀的位置。
+    net.socket.emit("player:state", { x: p.x, y: p.y, steps: p.steps });
+    net.lastSent = performance.now();
+    net.socket.emit("goal:reached");
   }
 }
 
@@ -1776,7 +1800,8 @@ net.socket.on("connect", () => {
   const invitedRoom = new URLSearchParams(location.search).get("room");
   if (invitedRoom && net.slot < 0) {
     $("#joinCode").value = invitedRoom.toUpperCase().slice(0, 6);
-    queueMicrotask(() => $("#joinRoom").click());
+    showLobbyMessage(`受邀加入房間 ${$("#joinCode").value}，請先輸入名稱再按「加入房間」`);
+    $("#playerName").focus();
   }
 });
 net.socket.on("disconnect", () => {
@@ -1796,7 +1821,8 @@ net.socket.on("room:closed", message => {
 });
 net.socket.on("round:start", data => {
   net.settings = data.settings;
-  net.startsAt = data.startsAt;
+  // 使用相對時間，避免兩台電腦的系統時鐘不同導致倒數不同步。
+  net.startsAt = Date.now() + data.countdownMs;
   net.playing = true;
   net.goalSent = false;
   score[0] = data.scores[0]; score[1] = data.scores[1];
@@ -1833,6 +1859,7 @@ net.socket.on("round:end", data => {
 });
 
 $("#createRoom").addEventListener("click", () => {
+  if (!$("#playerName").value.trim()) return showLobbyMessage("請先輸入名稱");
   showLobbyMessage("");
   net.socket.emit("room:create", { name: $("#playerName").value }, result => {
     if (!result?.ok) return showLobbyMessage(result?.error || "建立失敗");
@@ -1841,6 +1868,7 @@ $("#createRoom").addEventListener("click", () => {
   });
 });
 $("#joinRoom").addEventListener("click", () => {
+  if (!$("#playerName").value.trim()) return showLobbyMessage("請先輸入名稱");
   showLobbyMessage("");
   net.socket.emit("room:join", { name: $("#playerName").value, code: $("#joinCode").value }, result => {
     if (!result?.ok) return showLobbyMessage(result?.error || "加入失敗");

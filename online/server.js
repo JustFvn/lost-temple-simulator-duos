@@ -114,6 +114,7 @@ io.on("connection", socket => {
       scores: [0, 0],
       players: new Map([[socket.id, { slot: 0, name: cleanName(data?.name, "主辦者") }]]),
       layoutId: -1,
+      startsAt: 0,
     };
     rooms.set(code, room);
     socket.data.roomCode = code;
@@ -153,11 +154,14 @@ io.on("connection", socket => {
     if (room.scores.some(score => score >= room.settings.scoreToWin)) room.scores = [0, 0];
     room.layoutId = pickLayout(room.settings);
     room.status = "playing";
+    const countdownMs = 3500;
+    room.startsAt = Date.now() + countdownMs;
     io.to(room.code).emit("round:start", {
       layoutId: room.layoutId,
       settings: room.settings,
       scores: room.scores,
-      startsAt: Date.now() + 800,
+      startsAt: room.startsAt,
+      countdownMs,
     });
     reply(ack, { ok: true });
   });
@@ -185,6 +189,7 @@ io.on("connection", socket => {
     const room = findRoom(socket);
     const player = room?.players.get(socket.id);
     if (!room || !player || room.status !== "playing") return;
+    if (Date.now() < room.startsAt) return;
     const x = Number(player.x), y = Number(player.y);
     if (!Number.isFinite(x) || !Number.isFinite(y) || x < 340 || x > 480 || y < 20 || y > 160) return;
     room.status = "ended";
