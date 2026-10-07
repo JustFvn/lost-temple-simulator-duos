@@ -1,6 +1,7 @@
 import { DOORS } from "./layouts.js";
 import { SCALE, ROOM, WALL, BOARD, PR, START, GOAL, pos, GAPS } from "./geometry.js";
 import { roomCX, roomCY } from "./geometry.js";
+import { VIEW_SIZE, SIGHT_RADIUS, visibilityPolygon, isPointVisible } from "./vision.js";
 const BOARD_THEME = {
   dark: {
     mortar:  "#39443C",
@@ -73,11 +74,13 @@ function roundRect(ctx, x, y, w, h, r) {
  *        players:[{x,y,color}]|null, paths:[][]|null, flash:Map }
  */
 function paintBoard(ctx, px, st) {
-  const s = px / BOARD;
   ctx.save();
-  // Preserve the caller's device-pixel scale and shake translation.
-  ctx.scale(s, s);
-  ctx.clearRect(0, 0, BOARD, BOARD);
+  ctx.clearRect(0, 0, px, px);
+  ctx.fillStyle = "#050b0d"; ctx.fillRect(0, 0, px, px);
+  if (st.camera) {
+    ctx.scale(px / VIEW_SIZE, px / VIEW_SIZE);
+    ctx.translate(VIEW_SIZE / 2 - st.camera.x, VIEW_SIZE / 2 - st.camera.y);
+  } else ctx.scale(px / BOARD, px / BOARD);
 
   ctx.fillStyle = C.mortar;                       // 石造骨架
   ctx.fillRect(0, 0, BOARD, BOARD);
@@ -93,6 +96,11 @@ function paintBoard(ctx, px, st) {
     ctx.strokeStyle = edge;
     ctx.lineWidth = 1;
     ctx.strokeRect(x + .5, y + .5, ROOM - 1, ROOM - 1);
+    if (st.camera) {
+      ctx.font = "12px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+      ctx.fillStyle = "rgba(210,233,217,.4)";
+      ctx.fillText(String.fromCharCode(69 - ((i / 5) | 0)) + (i % 5 + 1), x + 12, y + 12);
+    }
   }
 
   drawGoal(ctx);
@@ -119,10 +127,34 @@ function paintBoard(ctx, px, st) {
   }
 
   if (st.paths) drawPaths(ctx, st.paths);
-  if (st.players) st.players.forEach((p, i) => drawPlayer(ctx, p, i));
+  if (st.players) st.players.forEach((p, i) => {
+    if (!st.fog || i === st.fog.slot || isPointVisible(st.fog.origin, p, st.fog.walls)) drawPlayer(ctx, p, i);
+  });
   else if (st.player) drawPlayer(ctx, st.player, 0);
 
   drawStartMark(ctx);
+  if (st.fog) drawFog(ctx, st.camera, st.fog);
+  ctx.restore();
+}
+
+function drawFog(ctx, camera, fog) {
+  const polygon = visibilityPolygon(fog.origin, fog.walls);
+  const left = camera.x - VIEW_SIZE / 2, top = camera.y - VIEW_SIZE / 2;
+  const trace = () => {
+    ctx.moveTo(polygon[0].x, polygon[0].y);
+    for (const point of polygon.slice(1)) ctx.lineTo(point.x, point.y);
+    ctx.closePath();
+  };
+  ctx.save();
+  ctx.beginPath(); ctx.rect(left, top, VIEW_SIZE, VIEW_SIZE); trace();
+  ctx.fillStyle = "#050b0d"; ctx.fill("evenodd");
+  ctx.beginPath(); trace(); ctx.clip();
+  const gradient = ctx.createRadialGradient(fog.origin.x, fog.origin.y, 0, fog.origin.x, fog.origin.y, SIGHT_RADIUS);
+  gradient.addColorStop(0, "rgba(5,11,13,0)");
+  gradient.addColorStop(.55, "rgba(5,11,13,0)");
+  gradient.addColorStop(.82, "rgba(5,11,13,.35)");
+  gradient.addColorStop(1, "rgba(5,11,13,1)");
+  ctx.fillStyle = gradient; ctx.fillRect(left, top, VIEW_SIZE, VIEW_SIZE);
   ctx.restore();
 }
 

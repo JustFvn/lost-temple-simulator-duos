@@ -37,9 +37,9 @@ function findPath(random, blocked = new Set()) {
   return visit(START_I) ? { rooms, doors } : null;
 }
 
-/** Generate one cycle containing start and goal, then attach optional dead ends.
- * Two internally disjoint paths form exactly two ways to the goal. Every extra
- * edge adds an unvisited room, so it can never introduce a third route.
+/** Generate only one cycle containing start and goal, with no dead-end branches.
+ * Two internally disjoint paths form exactly two ways to the goal. All open
+ * doors belong to these paths; unused rooms remain inaccessible.
  * This never samples the 125 official layouts.
  */
 export function generateMaze(random = Math.random) {
@@ -57,15 +57,6 @@ export function generateMaze(random = Math.random) {
       EDGES.find(edge => (edge.a === rooms[i] && edge.b === room) || (edge.b === rooms[i] && edge.a === room)).id) }));
   }
   const open = new Set(pair.flatMap(path => path.doors));
-  const used = new Set(pair.flatMap(path => path.rooms));
-  // Preserve a mix of isolated rooms and dead-end branches for door discovery.
-  const extraRooms = 2 + Math.floor(random() * 5);
-  for (let i = 0; i < extraRooms; i++) {
-    const candidates = EDGES.filter(edge => used.has(edge.a) !== used.has(edge.b));
-    if (!candidates.length) break;
-    const edge = shuffled(candidates, random)[0];
-    open.add(edge.id); used.add(edge.a); used.add(edge.b);
-  }
   const paths = allPaths(open);
   if (paths.length !== 2) throw new Error("生成迷宮必須恰有兩條通往終點的路線");
   return { openDoors: [...open].sort((a, b) => a - b), routeLengths: paths.map(path => path.length - 1) };

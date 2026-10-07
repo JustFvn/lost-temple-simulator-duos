@@ -1,0 +1,70 @@
+import assert from "node:assert/strict";
+import { io } from "socket.io-client";
+import { trafficState } from "./public/traffic.js";
+const url = process.env.TEST_URL || "http://localhost:3000";
+const host = io(url, { forceNew: true }), guest = io(url, { forceNew: true });
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const once = (socket, event) => new Promise((resolve, reject) => {
+  const handler = value => { clearTimeout(timer); resolve(value); };
+  const timer = setTimeout(() => { socket.off(event, handler); reject(new Error(`等待 ${event} 逾時`)); }, 10000);
+  socket.once(event, handler);
+});
+const ack = (socket, event, data = {}) => new Promise((resolve, reject) => socket.timeout(7000).emit(event, data, (error, result) => error ? reject(error) : resolve(result)));
+const waitPhase = async (round, phase) => {
+  for (let i = 0; i < 400; i++) {
+    const signal = trafficState(round.traffic, Date.now() - round.startsAt);
+    if (Date.now() >= round.startsAt && signal.phase === phase && signal.remaining > 800 && signal.phaseElapsed > 300) return signal;
+    await wait(30);
+  }
+  throw new Error(`未等到 ${phase}`);
+};
+try {
+  await Promise.all([once(host, "connect"), once(guest, "connect")]);
+  const created = await ack(host, "room:create", { name: "紅綠燈房主" });
+  await ack(guest, "room:join", { code: created.room.code, name: "紅綠燈對手" });
+  const settings = { ...created.room.settings, doorMode: "traffic", viewMode: "fog", mapMode: "procedural", scoreToWin: 1 };
+  assert.equal((await ack(guest, "settings:update", settings)).ok, false);
+  assert.equal((await ack(host, "settings:update", settings)).ok, true);
+  const starts = [once(host, "round:start"), once(guest, "round:start")];
+  await ack(host, "round:start"); const [round, guestRound] = await Promise.all(starts);
+  assert.deepEqual(round.traffic, guestRound.traffic);
+  assert.equal(round.startsAt, guestRound.startsAt);
+  assert.equal(round.settings.viewMode, "fog"); assert.equal(round.settings.mapMode, "procedural");
+  assert.equal((await ack(host, "goal:reached", { roundId: round.roundId, revision: 0 })).ok, false);
+  let phase = await waitPhase(round, "green");
+  const moved = once(guest, "player:state");
+  host.emit("player:state", { roundId: round.roundId, x: 450, y: 730, steps: 0, revision: 0, moving: true, trafficIndex: phase.index });
+  assert.equal((await moved).x, 450);
+  await waitPhase(round, "red");
+  let penalties = 0; const countPenalty = data => { if (data.penalized) penalties++; };
+  host.on("player:reset", countPenalty);
+  host.emit("player:state", { roundId: round.roundId, x: 450, y: 730, steps: 0, revision: 0, moving: false });
+  await wait(100); assert.equal(penalties, 0, "紅燈站著不動不受罰");
+  const ownReset = once(guest, "player:reset"), sharedReset = once(host, "player:reset");
+  guest.emit("player:state", { roundId: round.roundId, x: 600, y: 570, steps: 3, revision: 0, moving: false });
+  const reset = await ownReset; assert.deepEqual(await sharedReset, reset);
+  assert.equal(reset.slot, 1); assert.equal(reset.x, 428); assert.equal(reset.y, 730); assert.equal(reset.revision, 1);
+  const wallReset = once(host, "player:reset");
+  phase = trafficState(round.traffic, Date.now() - round.startsAt);
+  host.emit("player:state", { roundId: round.roundId, x: 450, y: 730, steps: 0, revision: 0, moving: true, trafficIndex: phase.index });
+  const wall = await wallReset; assert.equal(wall.slot, 0); assert.equal(wall.x, 392); assert.equal(wall.revision, 1);
+  const stale = once(host, "player:reset");
+  host.emit("player:state", { roundId: round.roundId, x: 410, y: 90, steps: 20, revision: 0, moving: false });
+  const correction = await stale; assert.equal(correction.revision, 1); assert.equal(correction.x, 392); assert(!correction.penalized);
+  assert.equal((await ack(host, "goal:reached", { roundId: round.roundId, revision: 0 })).ok, false);
+  assert.equal((await ack(host, "goal:reached", { roundId: round.roundId, revision: 1 })).ok, false);
+  phase = await waitPhase(round, "green");
+  const end = once(guest, "round:end");
+  host.emit("player:state", { roundId: round.roundId, x: 410, y: 90, steps: 20, revision: 1, moving: true, trafficIndex: phase.index });
+  assert.equal((await ack(host, "goal:reached", { roundId: round.roundId, revision: 1 })).ok, true);
+  assert.equal((await end).matchWinner, 0);
+  const nextStart = once(host, "round:start"); await ack(host, "round:start"); const next = await nextStart;
+  assert.notEqual(next.roundId, round.roundId);
+  assert.equal((await ack(host, "goal:reached", { roundId: round.roundId, revision: 1 })).ok, false);
+  await waitPhase(next, "green");
+  const newPosition = once(guest, "player:state");
+  host.emit("player:state", { roundId: next.roundId, x: 410, y: 730, steps: 0, revision: 0, moving: false });
+  assert.equal((await newPosition).x, 410, "新回合重置傳送版本");
+  const lobby = once(host, "room:state"); await ack(guest, "room:leave"); assert.equal((await lobby).status, "lobby");
+  console.log("OK: 雙方同步燈號、紅燈靜止安全／按鍵及位移受罰、雙端傳送、舊位置隔離、勝利、新回合與離房。");
+} finally { host.disconnect(); guest.disconnect(); }

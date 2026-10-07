@@ -1,11 +1,16 @@
 import { DOORS } from "./layouts.js";
 import { BOARD, ROOM, WALL, PR, SPEED, START_I, GOAL_I, pos, GAPS, allPaths, buildWalls, roomStates } from "./geometry.js";
 import { paintBoard } from "./renderer.js";
+import { cameraTarget, followCamera } from "./vision.js";
+import { trafficState } from "./traffic.js";
 
 const $ = selector => document.querySelector(selector);
 const socket = window.io();
 const canvas = $("#board"), ctx = canvas.getContext("2d");
+canvas.tabIndex = 0;
 const held = new Set();
+const blockedControls = new Set();
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const CONTROL = { KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1], KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0] };
 let room = null, slot = -1, run = null, currentView = "home", serverOffset = 0;
 let noticeTimer, settingsTimer, entryBusy = false, starting = false, lastSent = 0;
@@ -45,7 +50,9 @@ socket.on("connect", () => {
   });
 });
 function clearRoom() {
+  clearQuiz();
   room = null; run = null; slot = -1; held.clear(); clearTimeout(settingsTimer);
+  blockedControls.clear(); $("#trafficSignal").hidden = true;
   $("#roomBadge").hidden = $("#leaveRoom").hidden = true;
   history.replaceState(null, "", location.pathname); showView("home");
 }
@@ -94,7 +101,8 @@ $("#copyInvite").addEventListener("click", async () => {
 });
 
 function applySettings(settings) {
-  for (const key of ["layoutMode", "drawMode", "fixedLayout", "scoreToWin"]) $(`#${key}`).value = settings[key];
+  for (const key of ["doorMode", "layoutMode", "drawMode", "fixedLayout", "scoreToWin"]) $(`#${key}`).value = settings[key];
+  $("#viewMode").checked = settings.viewMode === "fog";
   for (const key of ["shareDiscovery", "revealAfterRound"]) $(`#${key}`).checked = settings[key];
   for (const button of document.querySelectorAll("[data-mode]")) {
     const selected = button.dataset.mode === settings.mapMode;
@@ -105,7 +113,12 @@ function applySettings(settings) {
 function syncSettingsDisplay() {
   const generated = $("#proceduralMode").classList.contains("selected");
   $("#officialSettings").hidden = generated;
-  $("#modeDescription").textContent = generated ? "不抽選官方關卡。程式每回合生成新迷宮，保證恰有兩條可抵達 E3 的分岔路線。" : "使用真實佈局資料，可依官方機率抽選。";
+  $("#modeDescription").textContent = generated ? "不抽選官方關卡。程式每回合生成新迷宮，沒有死路，兩條分岔都能抵達 E3。" : "使用真實佈局資料，可依官方機率抽選。";
+  const fog = $("#viewMode").checked, math = $("#doorMode").value === "math", traffic = $("#doorMode").value === "traffic";
+  $("#viewDescription").textContent = fog ? "鏡頭跟隨自己，遠處及牆後被黑霧遮住" : "獨立開關，可搭配任意地圖與探門模式";
+  $("#doorDescription").textContent = math ? "每人撞門都要回答簡單加減乘除題；即使真假已共享，仍須自己答對才能解除限制。" : "碰到未知的門，即可知道真假。";
+  if (traffic) $("#doorDescription").textContent = "雙方同步紅綠燈：綠燈前進、黃燈準備停，紅燈移動就傳回 A3 起點。探門記錄保留。";
+  $("#shareDiscoveryHint").textContent = math ? "答對後共享開關資訊，但每人仍要自己答對才能通過" : fog ? "同步探門記錄，但不會揭開遠處的黑霧" : "對方發現的真假門，你也看得見";
   const fixed = $("#layoutMode").value === "fixed";
   $("#fixedLayoutField").hidden = !fixed; $("#drawModeField").hidden = fixed;
   for (const button of document.querySelectorAll("[data-score]")) button.classList.toggle("selected", button.dataset.score === $("#scoreToWin").value);
@@ -115,7 +128,7 @@ function readSettings() {
     const input = $(`#${id}`);
     if (!input.checkValidity() || !input.value) { input.reportValidity(); throw new Error(id === "scoreToWin" ? "勝利分數請輸入 1–99 的整數。" : "佈局編號請輸入 0–124。"); }
   }
-  return { mapMode: $("#proceduralMode").classList.contains("selected") ? "procedural" : "official", drawMode: $("#drawMode").value, layoutMode: $("#layoutMode").value, fixedLayout: Number($("#fixedLayout").value), scoreToWin: Number($("#scoreToWin").value), shareDiscovery: $("#shareDiscovery").checked, revealAfterRound: $("#revealAfterRound").checked };
+  return { mapMode: $("#proceduralMode").classList.contains("selected") ? "procedural" : "official", viewMode: $("#viewMode").checked ? "fog" : "standard", doorMode: $("#doorMode").value, drawMode: $("#drawMode").value, layoutMode: $("#layoutMode").value, fixedLayout: Number($("#fixedLayout").value), scoreToWin: Number($("#scoreToWin").value), shareDiscovery: $("#shareDiscovery").checked, revealAfterRound: $("#revealAfterRound").checked };
 }
 async function saveSettings() {
   clearTimeout(settingsTimer);
@@ -159,7 +172,7 @@ function updateRoom(data) {
   $("#startRound").textContent = room.status === "playing" ? "返回對戰 →" : room.players.length !== 2 ? "等待對手加入" : isHost() ? (room.roundNumber ? "繼續對戰 →" : "開始對戰 →") : "等待房主開始";
   if (room.status === "lobby" && (run || previousStatus === "ended" || previousStatus === "playing")) {
     if (previousStatus === "playing") notify("對手已離開，回合已取消、比分已重置。");
-    run = null; showView("lobby");
+    clearQuiz(); run = null; blockedControls.clear(); $("#trafficSignal").hidden = true; showView("lobby");
   }
 }
 socket.on("room:state", updateRoom);
@@ -181,15 +194,115 @@ $("#toggleRoutes").addEventListener("click", () => {
   $("#toggleRoutes").textContent = run.showRoutes ? "隱藏路線" : "查看兩條路線";
 });
 
+const mathDialog = $("#mathChallenge");
+// Only a correct answer or the end of the round can dismiss the question.
+mathDialog.addEventListener("cancel", event => event.preventDefault());
+function updateMathDoorStatus(game, doorId) {
+  const state = game.doors[doorId];
+  $("#mathDoorStatus").textContent = state ? `已共享：${state === 1 ? "真門（開）" : "假門（關）"}。仍須自己答對才能繼續。` : "答對後揭曉這扇門的真假。";
+}
+function clearQuiz() {
+  if (run) run.quiz = null;
+  held.clear();
+  if (mathDialog.open) mathDialog.close();
+  mathDialog.hidden = true; $("#mathAnswer").value = "";
+}
+function revealMathDoor(game, data) {
+  if (run !== game || game.done) return;
+  game.doors[data.doorId] = data.state; game.flash.set(data.doorId, 1);
+  game.solved.add(data.doorId);
+  if (data.state === 1) game.unlocked.add(data.doorId);
+  game.walls = buildWalls(game.unlocked);
+  if (game.quiz?.doorId === data.doorId) { clearQuiz(); canvas.focus({ preventScroll: true }); }
+  const subject = data.by !== undefined && data.by !== slot ? "對手答對了" : "答對了";
+  notify(data.state === 1 ? `${subject}！這是真門，現在可以通過。` : `${subject}！這是假門，請另找路線。`);
+}
+async function beginQuiz(doorId) {
+  const game = run;
+  if (!game || game.done) return;
+  const loading = { doorId, loading: true };
+  game.quiz = loading; held.clear(); sendPosition();
+  $("#mathQuestion").textContent = "出題中…";
+  $("#mathFeedback").textContent = "正在取得題目，計時仍繼續。";
+  $("#mathFeedback").classList.remove("incorrect");
+  $("#mathAnswer").disabled = true; $("#submitMath").disabled = true;
+  $("#submitMath").textContent = "確認答案 →";
+  updateMathDoorStatus(game, doorId);
+  mathDialog.hidden = false;
+  if (!mathDialog.open) mathDialog.showModal();
+  $("#mathTitle").focus({ preventScroll: true });
+  try {
+    const data = await request("door:challenge", { roundId: game.roundId, doorId });
+    if (run !== game || game.done || game.quiz !== loading) return;
+    if (data.solved) { revealMathDoor(game, data); return; }
+    game.quiz = { ...data.challenge, loading: false };
+    $("#mathQuestion").textContent = data.challenge.question;
+    $("#mathFeedback").textContent = data.challenge.attempts ? `已作答 ${data.challenge.attempts} 次，可以繼續重試。` : "請輸入整數答案，答錯可一直重試。";
+    $("#mathAnswer").disabled = false; $("#submitMath").disabled = false;
+    $("#mathAnswer").value = "";
+    if (currentView === "game") $("#mathAnswer").focus();
+  } catch (error) {
+    if (run !== game || game.done || game.quiz !== loading) return;
+    game.quiz = { doorId, error: true };
+    $("#mathFeedback").textContent = error.message;
+    $("#mathFeedback").classList.add("incorrect");
+    $("#submitMath").disabled = false; $("#submitMath").textContent = "重新取得題目";
+  }
+}
+$("#mathForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const game = run, quiz = game?.quiz;
+  if (!quiz || game.done || quiz.loading || quiz.submitting) return;
+  if (quiz.error) { beginQuiz(quiz.doorId); return; }
+  quiz.submitting = true;
+  $("#submitMath").disabled = true; $("#mathAnswer").disabled = true;
+  try {
+    const data = await request("door:answer", { roundId: game.roundId, challengeId: quiz.id, answer: $("#mathAnswer").value });
+    if (run !== game || game.done || game.quiz !== quiz) return;
+    if (data.correct) { revealMathDoor(game, data); return; }
+    quiz.submitting = false;
+    $("#mathFeedback").textContent = `還不對，第 ${data.attempts} 次作答。再試一次，答對才能解除限制。`;
+    $("#mathFeedback").classList.add("incorrect");
+    $("#mathAnswer").disabled = false; $("#submitMath").disabled = false;
+    $("#mathAnswer").value = ""; $("#mathAnswer").focus();
+  } catch (error) {
+    if (run !== game || game.done || game.quiz !== quiz) return;
+    // Retrieving the same door also recovers a lost successful answer ACK.
+    quiz.error = true; quiz.submitting = false;
+    $("#mathFeedback").textContent = error.message;
+    $("#mathFeedback").classList.add("incorrect");
+    $("#submitMath").disabled = false; $("#submitMath").textContent = "重新取得題目";
+  }
+});
+
 socket.on("round:start", data => {
   if (!room) return;
-  held.clear(); lastSent = 0;
+  clearQuiz();
+  held.clear(); blockedControls.clear(); lastSent = 0;
   // Convert the shared server start time to a monotonic local deadline.
   const wait = Math.max(0, data.startsAt - (Date.now() + serverOffset));
-  run = { ...data, open: new Set(data.openDoors), walls: buildWalls(new Set(data.openDoors)), doors: new Int8Array(DOORS.length), visited: new Uint8Array(25), flash: new Map(), players: [0, 1].map(i => ({ x: 392 + 36 * i, y: 730, room: START_I, steps: 0 })), started: performance.now() + wait, elapsed: 0, done: false, goalPending: false, showRoutes: false };
+  run = { ...data, open: new Set(data.openDoors), walls: buildWalls(new Set(data.openDoors)), doors: new Int8Array(DOORS.length), visited: new Uint8Array(25), flash: new Map(), players: [0, 1].map(i => ({ x: 392 + 36 * i, y: 730, room: START_I, steps: 0, revision: 0 })), started: performance.now() + wait, elapsed: 0, done: false, goalPending: false, showRoutes: false };
   run.visited[START_I] = 1;
   run.paths = allPaths(run.open);
-  $("#gameModeLabel").textContent = data.settings.mapMode === "procedural" ? "GENERATED MAZE" : "OFFICIAL MAZE";
+  run.unlocked = new Set(); run.solved = new Set(); run.quiz = null;
+  if (data.settings.doorMode === "math") run.walls = buildWalls(run.unlocked);
+  run.camera = cameraTarget(run.players[slot]);
+  const fog = data.settings.viewMode === "fog";
+  $("#gameModeLabel").textContent = fog ? "FOG EXPLORATION" : data.settings.mapMode === "procedural" ? "GENERATED MAZE" : "OFFICIAL MAZE";
+  $("#raceTitle").textContent = fog ? "在黑霧中前進。" : "選你的路。";
+  $("#raceDescription").textContent = fog ? "鏡頭跟著你移動，遠處與牆後都被黑霧遮住。記住探過的門，向北尋找 E3 王冠。" : "摸清真假門，選好你的路線。找到王冠，拿下這一分。";
+  if (data.settings.doorMode === "math") {
+    $("#gameModeLabel").textContent = fog ? "MATH GATES · FOG ON" : "MATH GATES";
+    $("#raceTitle").textContent = "答對，才揭曉。";
+    $("#raceDescription").textContent = "撞門先答加減乘除題，答錯可一直重試。即使已共享真假資訊，仍要自己答對才能通過；計時與對手不會暫停。";
+  }
+  $("#trafficSignal").hidden = !data.traffic;
+  if (data.traffic) {
+    $("#gameModeLabel").textContent = fog ? "RED LIGHT · FOG ON" : "RED LIGHT / GREEN LIGHT";
+    $("#raceTitle").textContent = "紅燈停，綠燈走。";
+    $("#raceDescription").textContent = "雙方共用燈號，黃燈預告後就要停下。紅燈時按移動鍵也算違規，會被傳回起點；已探過的門保留。";
+  }
+  canvas.setAttribute("aria-label", fog ? "黑霧探索迷宮，捲動鏡頭跟隨你的角色" : "迷宮對戰盤面");
   $("#roundTitle").textContent = `第 ${data.roundNumber} 回合`;
   $("#mapLabel").textContent = data.layoutId === null ? "程式生成 · 兩條分岔" : `官方佈局 #${data.layoutId}`;
   $("#raceInfo").hidden = false; $("#resultInfo").hidden = true;
@@ -204,12 +317,34 @@ socket.on("player:state", data => {
   Object.assign(run.players[data.slot], { x: data.x, y: data.y, steps: data.steps });
   if (run.settings.shareDiscovery) markRoom(run.players[data.slot], false);
 });
+socket.on("player:reset", data => {
+  if (!run?.traffic || run.done || data.roundId !== run.roundId) return;
+  const player = run.players[data.slot];
+  if (!player || data.revision <= player.revision) return;
+  const changed = data.revision > player.revision;
+  Object.assign(player, { x: data.x, y: data.y, room: START_I, steps: data.steps, revision: data.revision });
+  if (data.slot === slot) {
+    for (const key of held) blockedControls.add(key);
+    held.clear(); run.goalPending = false; run.camera = cameraTarget(player);
+    if (changed) notify("紅燈移動！已傳回 A3 起點，放開方向鍵後再出發。");
+  } else if (changed) notify("對手紅燈移動，被傳回起點！");
+});
 socket.on("door:discover", data => {
   if (!run || run.done || data.roundId !== run.roundId) return;
+  if (run.settings.doorMode === "math") {
+    if (data.mathSolved) {
+      // Shared knowledge never solves another player's question or unlocks it.
+      run.doors[data.doorId] = data.state; run.flash.set(data.doorId, 1);
+      if (run.quiz?.doorId === data.doorId) updateMathDoorStatus(run, data.doorId);
+      if (data.by !== slot) notify(`對手答對了：${data.state === 1 ? "真門（開）" : "假門（關）"}。你仍需答對自己的題目。`);
+    }
+    return;
+  }
   run.doors[data.doorId] = data.state; run.flash.set(data.doorId, 1);
 });
 socket.on("round:end", data => {
   if (!run || data.roundId !== run.roundId) return;
+  clearQuiz();
   run.done = true; run.elapsed = data.elapsedMs; held.clear();
   for (const player of data.players) Object.assign(run.players[player.slot], player);
   run.showRoutes = run.settings.revealAfterRound;
@@ -230,15 +365,15 @@ socket.on("round:end", data => {
 });
 
 addEventListener("keydown", event => {
-  if (currentView !== "game" || !CONTROL[event.code] || event.target.closest("input, select, textarea") || event.ctrlKey || event.metaKey || event.altKey) return;
-  event.preventDefault(); held.add(event.code);
+  if (currentView !== "game" || run?.quiz || !CONTROL[event.code] || event.target.closest("input, select, textarea") || event.ctrlKey || event.metaKey || event.altKey) return;
+  event.preventDefault(); if (!blockedControls.has(event.code)) held.add(event.code);
 });
-addEventListener("keyup", event => held.delete(event.code));
-addEventListener("blur", () => held.clear());
+addEventListener("keyup", event => { held.delete(event.code); blockedControls.delete(event.code); });
+addEventListener("blur", () => { held.clear(); blockedControls.clear(); });
 document.addEventListener("visibilitychange", () => { if (document.hidden) held.clear(); });
 for (const button of document.querySelectorAll("[data-key]")) {
-  button.addEventListener("pointerdown", event => { event.preventDefault(); if (currentView !== "game") return; button.setPointerCapture(event.pointerId); held.add(button.dataset.key); });
-  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(name, () => held.delete(button.dataset.key));
+  button.addEventListener("pointerdown", event => { event.preventDefault(); if (currentView !== "game" || run?.quiz) return; button.setPointerCapture(event.pointerId); if (!blockedControls.has(button.dataset.key)) held.add(button.dataset.key); });
+  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(name, () => { held.delete(button.dataset.key); blockedControls.delete(button.dataset.key); });
 }
 function collide(player) {
   for (const wall of run.walls) {
@@ -258,7 +393,7 @@ function collide(player) {
 }
 function sendPosition() {
   const { x, y, steps } = run.players[slot];
-  socket.emit("player:state", { roundId: run.roundId, x, y, steps });
+  socket.emit("player:state", { roundId: run.roundId, x, y, steps, revision: run.players[slot].revision, ...(run.traffic ? { moving: held.size > 0, trafficIndex: trafficState(run.traffic, run.elapsed).index } : {}) });
 }
 function markRoom(player, local) {
   const c = Math.floor((player.x - WALL) / (ROOM + WALL)), r = Math.floor((player.y - WALL) / (ROOM + WALL));
@@ -269,21 +404,24 @@ function markRoom(player, local) {
   if (index !== player.room) { player.room = index; player.steps++; }
   if (index === GOAL_I && !run.goalPending) {
     run.goalPending = true; sendPosition();
-    request("goal:reached", { roundId: run.roundId }).catch(() => { if (run && !run.done) run.goalPending = false; });
+    request("goal:reached", { roundId: run.roundId, revision: player.revision }).catch(() => { if (run && !run.done) run.goalPending = false; });
   }
 }
 function step(dt) {
   const player = run.players[slot];
   let dx = 0, dy = 0;
   for (const key of held) { const control = CONTROL[key]; if (control) { dx += control[0]; dy += control[1]; } }
+  // Still send movement intent to the server: pushing into a wall counts too.
+  if (run.traffic && trafficState(run.traffic, run.elapsed).phase === "red") return;
   if (dx || dy) {
     const distance = SPEED * dt, segments = Math.max(1, Math.ceil(distance / 6)), length = Math.hypot(dx, dy);
     for (let i = 0; i < segments; i++) { player.x += dx / length * distance / segments; player.y += dy / length * distance / segments; collide(player); collide(player); }
   }
   for (let i = 0; i < GAPS.length; i++) {
-    if (run.doors[i]) continue;
+    if (run.settings.doorMode === "math" ? run.solved.has(i) : run.doors[i]) continue;
     const gap = GAPS[i], cx = Math.max(gap.x, Math.min(player.x, gap.x + gap.w)), cy = Math.max(gap.y, Math.min(player.y, gap.y + gap.h));
     if (Math.hypot(player.x - cx, player.y - cy) >= PR + 2) continue;
+    if (run.settings.doorMode === "math") { beginQuiz(i); break; }
     run.doors[i] = run.open.has(i) ? 1 : 2; run.flash.set(i, 1);
     socket.emit("door:discover", { roundId: run.roundId, doorId: i });
   }
@@ -305,19 +443,32 @@ function frame(now) {
       $("#countdown").hidden = remaining <= -450;
       $("#countdown").classList.toggle("go", remaining <= 0);
       $("#countdownValue").textContent = remaining > 0 ? String(Math.min(3, Math.ceil(remaining / 1000))) : "GO";
-      $("#gamePhase").textContent = remaining > 0 ? "準備開始" : "競速進行中";
+      $("#gamePhase").textContent = remaining > 0 ? "準備開始" : run.quiz ? "答題中 · 計時繼續" : "競速進行中";
       run.elapsed = Math.max(0, -remaining);
       if (remaining <= 0 && currentView === "game" && !run.goalPending) {
-        step(dt);
+        if (!run.quiz) step(dt);
         if (!run.done && now - lastSent > 50) { sendPosition(); lastSent = now; }
       }
     } else $("#gamePhase").textContent = "回合結束";
     $("#clock").textContent = fmt(run.elapsed);
+    if (run.traffic) {
+      const signal = trafficState(run.traffic, run.elapsed), phase = run.done ? "done" : remaining > 0 ? "ready" : signal.phase;
+      $("#trafficSignal").dataset.phase = phase;
+      const labels = { ready: "準備開始", green: "綠燈 · 可以前進", yellow: "黃燈 · 準備停下", red: "紅燈 · 不要移動", done: "回合結束" };
+      if ($("#trafficLabel").textContent !== labels[phase]) $("#trafficLabel").textContent = labels[phase];
+      $("#trafficCountdown").textContent = phase === "ready" || phase === "done" ? "—" : `${(signal.remaining / 1000).toFixed(1)}s`;
+    }
     for (let i = 0; i < 2; i++) $(`#p${i + 1}Steps`).textContent = `${run.players[i].steps} 步`;
     for (const [key, value] of run.flash) { const next = value - dt * 3.2; if (next <= 0) run.flash.delete(key); else run.flash.set(key, next); }
     if (currentView === "game") {
+      const localPlayer = run.players[slot];
+      run.camera = followCamera(run.camera, localPlayer, dt, reducedMotion);
+      const fog = run.settings.viewMode === "fog" && !run.showRoutes;
+      canvas.dataset.view = fog ? "fog" : "overview";
+      $("#fogBadge").hidden = !fog;
+      $("#boardHint").textContent = fog ? `${String.fromCharCode(69 - Math.floor(localPlayer.room / 5))}${localPlayer.room % 5 + 1} · 王冠位於 E3 ↑` : "A3 出發 → E3 王冠";
       const doors = run.showRoutes ? Int8Array.from(DOORS, (_, i) => run.open.has(i) ? 1 : 2) : run.doors;
-      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, paths: run.showRoutes ? run.paths : null, flash: run.flash });
+      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, paths: run.showRoutes ? run.paths : null, flash: run.flash, camera: fog ? run.camera : null, fog: fog ? { origin: localPlayer, walls: run.walls, slot } : null });
     }
   }
   requestAnimationFrame(frame);

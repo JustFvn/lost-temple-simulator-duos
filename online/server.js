@@ -5,8 +5,10 @@ import { extname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "socket.io";
 import { LAYOUTS } from "./public/layouts.js";
-import { allPaths } from "./public/geometry.js";
+import { allPaths, GAPS, PR } from "./public/geometry.js";
 import { generateMaze } from "./maze.js";
+import { generateMathProblem, isCorrectAnswer } from "./math-challenge.js";
+import { createTrafficSchedule, trafficState, TRAFFIC_GRACE_MS } from "./public/traffic.js";
 
 const ROOT = fileURLToPath(new URL("./public/", import.meta.url));
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
@@ -26,7 +28,7 @@ const httpServer = createServer(async (req, res) => {
 });
 const io = new Server(httpServer, { serveClient: true });
 const rooms = new Map();
-const DEFAULT_SETTINGS = { mapMode: "official", drawMode: "weighted", layoutMode: "random", fixedLayout: 0, scoreToWin: 3, shareDiscovery: true, revealAfterRound: true };
+const DEFAULT_SETTINGS = { mapMode: "official", viewMode: "standard", doorMode: "normal", drawMode: "weighted", layoutMode: "random", fixedLayout: 0, scoreToWin: 3, shareDiscovery: true, revealAfterRound: true };
 const reply = (ack, payload) => { if (typeof ack === "function") ack(payload); };
 const fail = (ack, error) => reply(ack, { ok: false, error });
 const findRoom = socket => rooms.get(socket.data.roomCode);
@@ -43,7 +45,11 @@ function cleanSettings(value = {}) {
   if (!Number.isInteger(scoreToWin) || scoreToWin < 1 || scoreToWin > 99) throw new Error("勝利分數必須是 1–99 的整數。");
   if (!Number.isInteger(fixedLayout) || fixedLayout < 0 || fixedLayout >= LAYOUTS.length) throw new Error("佈局編號必須是 0–124 的整數。");
   if (!["official", "procedural"].includes(value.mapMode)) throw new Error("無效的迷宮模式。");
-  return { mapMode: value.mapMode, drawMode: value.drawMode === "uniform" ? "uniform" : "weighted", layoutMode: value.layoutMode === "fixed" ? "fixed" : "random", fixedLayout, scoreToWin, shareDiscovery: value.shareDiscovery !== false, revealAfterRound: value.revealAfterRound !== false };
+  const viewMode = value.viewMode ?? "standard";
+  if (!["standard", "fog"].includes(viewMode)) throw new Error("無效的探索模式。");
+  const doorMode = value.doorMode ?? "normal";
+  if (!["normal", "math", "traffic"].includes(doorMode)) throw new Error("無效的遊戲玩法。");
+  return { mapMode: value.mapMode, viewMode, doorMode, drawMode: value.drawMode === "uniform" ? "uniform" : "weighted", layoutMode: value.layoutMode === "fixed" ? "fixed" : "random", fixedLayout, scoreToWin, shareDiscovery: value.shareDiscovery !== false, revealAfterRound: value.revealAfterRound !== false };
 }
 function publicRoom(room) {
   return { code: room.code, hostId: room.hostId, settings: room.settings, status: room.status, scores: room.scores, roundNumber: room.roundNumber, players: [...room.players].map(([id, player]) => ({ id, slot: player.slot, name: player.name })) };
@@ -120,26 +126,67 @@ io.on("connection", socket => {
     room.openDoors = room.layoutId === null ? generateMaze().openDoors : LAYOUTS[room.layoutId][1];
     room.open = new Set(room.openDoors); room.roundId = randomUUID(); room.roundNumber++;
     room.status = "playing"; room.startsAt = Date.now() + 3500;
-    for (const player of room.players.values()) { player.x = 392 + player.slot * 36; player.y = 730; player.steps = 0; }
-    io.to(room.code).emit("round:start", { roundId: room.roundId, roundNumber: room.roundNumber, layoutId: room.layoutId, openDoors: room.openDoors, settings: room.settings, scores: room.scores, startsAt: room.startsAt, serverNow: Date.now(), countdownMs: 3500 });
+    room.traffic = room.settings.doorMode === "traffic" ? createTrafficSchedule() : null;
+    for (const player of room.players.values()) { player.x = 392 + player.slot * 36; player.y = 730; player.steps = 0; player.revision = 0; player.solvedDoors = new Set(); player.challenge = null; }
+    io.to(room.code).emit("round:start", { roundId: room.roundId, roundNumber: room.roundNumber, layoutId: room.layoutId, openDoors: room.openDoors, settings: room.settings, scores: room.scores, startsAt: room.startsAt, serverNow: Date.now(), countdownMs: 3500, traffic: room.traffic });
     broadcast(room); reply(ack, { ok: true });
   });
   socket.on("player:state", data => {
     const room = activeRound(socket, data), player = room?.players.get(socket.id);
-    if (!player) return;
+    if (!player || player.challenge) return;
     const x = Number(data.x), y = Number(data.y), steps = Number(data.steps);
     if (![x, y, steps].every(Number.isFinite) || x < 10 || x > 810 || y < 10 || y > 810 || !Number.isInteger(steps) || steps < 0 || steps > 1e6) return;
+    if (room.traffic) {
+      const correction = () => ({ roundId: room.roundId, slot: player.slot, x: player.x, y: player.y, steps: player.steps, revision: player.revision });
+      // Ignore in-flight positions from before a teleport.
+      if (data.revision !== player.revision) { socket.emit("player:reset", correction()); return; }
+      const signal = trafficState(room.traffic, Date.now() - room.startsAt);
+      const moved = Math.hypot(x - player.x, y - player.y) > .75;
+      const redInput = data.moving === true && data.trafficIndex === signal.index;
+      if (signal.phase === "red" && (redInput || (signal.phaseElapsed >= TRAFFIC_GRACE_MS && (moved || data.moving === true)))) {
+        player.x = 392 + player.slot * 36; player.y = 730; player.revision++;
+        io.to(room.code).emit("player:reset", { ...correction(), penalized: true });
+        return;
+      }
+    }
     player.x = x; player.y = y; player.steps = steps;
     socket.to(room.code).emit("player:state", { roundId: room.roundId, slot: player.slot, x, y, steps });
   });
   socket.on("door:discover", data => {
     const room = activeRound(socket, data);
-    if (!room?.settings.shareDiscovery || !Number.isInteger(data?.doorId) || data.doorId < 0 || data.doorId >= 39) return;
+    if (!room?.settings.shareDiscovery || room.settings.doorMode === "math" || !Number.isInteger(data?.doorId) || data.doorId < 0 || data.doorId >= 39) return;
     socket.to(room.code).emit("door:discover", { roundId: room.roundId, doorId: data.doorId, state: room.open.has(data.doorId) ? 1 : 2 });
+  });
+  socket.on("door:challenge", (data, ack) => {
+    const room = activeRound(socket, data), player = room?.players.get(socket.id);
+    if (!player || room.settings.doorMode !== "math") return fail(ack, "目前沒有啟用數學探門，或回合尚未開始／已結束。");
+    const doorId = data?.doorId;
+    if (!Number.isInteger(doorId) || doorId < 0 || doorId >= GAPS.length) return fail(ack, "無效的門。");
+    if (player.challenge && player.challenge.doorId !== doorId) return fail(ack, "請先答對目前的題目。");
+    const gap = GAPS[doorId];
+    const distance = Math.hypot(player.x - Math.max(gap.x, Math.min(player.x, gap.x + gap.w)), player.y - Math.max(gap.y, Math.min(player.y, gap.y + gap.h)));
+    if (distance > PR + 4) return fail(ack, "碰到門才能取得題目。");
+    if (player.solvedDoors.has(doorId)) return reply(ack, { ok: true, solved: true, doorId, state: room.open.has(doorId) ? 1 : 2 });
+    if (!player.challenge) player.challenge = { id: randomUUID(), doorId, ...generateMathProblem(), attempts: 0 };
+    const { id, question, attempts } = player.challenge;
+    reply(ack, { ok: true, challenge: { id, doorId, question, attempts } });
+  });
+  socket.on("door:answer", (data, ack) => {
+    const room = activeRound(socket, data), player = room?.players.get(socket.id), challenge = player?.challenge;
+    if (!challenge || challenge.id !== data?.challengeId) return fail(ack, "題目已失效，請重新取得題目。");
+    challenge.attempts++;
+    if (!isCorrectAnswer(data.answer, challenge.answer)) return reply(ack, { ok: true, correct: false, attempts: challenge.attempts });
+    player.solvedDoors.add(challenge.doorId); player.challenge = null;
+    if (room.settings.shareDiscovery) {
+      io.to(room.code).emit("door:discover", { roundId: room.roundId, doorId: challenge.doorId, state: room.open.has(challenge.doorId) ? 1 : 2, mathSolved: true, by: player.slot });
+    }
+    reply(ack, { ok: true, correct: true, doorId: challenge.doorId, state: room.open.has(challenge.doorId) ? 1 : 2, attempts: challenge.attempts });
   });
   socket.on("goal:reached", (data, ack) => {
     const room = activeRound(socket, data), player = room?.players.get(socket.id);
     if (!player) return fail(ack, "回合尚未開始或已結束。");
+    if (room.traffic && data.revision !== player.revision) return fail(ack, "位置已重置，請重新抵達終點。");
+    if (player.challenge) return fail(ack, "請先答對目前的題目。");
     if (player.x < 340 || player.x > 480 || player.y < 20 || player.y > 160) return fail(ack, "尚未抵達 E3 終點。");
     room.status = "ended"; room.scores[player.slot]++;
     io.to(room.code).emit("round:end", { roundId: room.roundId, winner: player.slot, scores: room.scores, matchWinner: room.scores[player.slot] >= room.settings.scoreToWin ? player.slot : -1, elapsedMs: Date.now() - room.startsAt, steps: player.steps, players: [...room.players.values()].map(({ slot, x, y, steps }) => ({ slot, x, y, steps })), routeLengths: room.settings.revealAfterRound ? allPaths(room.open).map(path => path.length - 1) : null });

@@ -39,6 +39,8 @@ try {
   assert.equal((await ack(guest, "settings:update", { scoreToWin: 7 })).ok, false);
   assert.equal((await ack(guest, "round:start")).ok, false);
   const settings = { ...created.room.settings, layoutMode: "fixed", fixedLayout: 12, scoreToWin: 2, shareDiscovery: false, revealAfterRound: false };
+  assert.equal(settings.viewMode, "standard");
+  assert.equal((await ack(host, "settings:update", { ...settings, viewMode: "invalid" })).ok, false);
   for (const value of [0, -1, 1.5, 100, "abc"]) assert.equal((await ack(host, "settings:update", { ...settings, scoreToWin: value })).ok, false);
   assert.equal((await ack(host, "settings:update", settings)).ok, true);
   const official = await begin(); assert.equal(official.layoutId, 12);
@@ -55,9 +57,13 @@ try {
   assert.equal((await ack(host, "goal:reached", { roundId: next.roundId })).ok, false, "舊回合位置不可用於新回合");
   const final = await win(next, 2); assert.equal(final.matchWinner, 0, "自訂兩分觸發整場勝利");
   const statePromise = once(guest, "room:state", value => value.settings.mapMode === "procedural");
-  assert.equal((await ack(host, "settings:update", { ...settings, mapMode: "procedural", scoreToWin: 4, shareDiscovery: true, revealAfterRound: true })).ok, true);
+  assert.equal((await ack(host, "settings:update", { ...settings, mapMode: "procedural", viewMode: "fog", scoreToWin: 4, shareDiscovery: true, revealAfterRound: true })).ok, true);
   const state = await statePromise; assert.deepEqual(state.scores, [0, 0]); assert.equal(state.settings.scoreToWin, 4);
-  const generated = await begin(); assert.equal(generated.layoutId, null); assert.equal(allPaths(new Set(generated.openDoors)).length, 2);
+  const generated = await begin(); assert.equal(generated.layoutId, null);
+  assert.equal(generated.settings.viewMode, "fog", "兩端必須同步黑霧模式");
+  const generatedPaths = allPaths(new Set(generated.openDoors));
+  assert.equal(generatedPaths.length, 2);
+  assert.equal(generated.openDoors.length, generatedPaths.reduce((sum, path) => sum + path.length - 1, 0), "伺服器生成地圖不可包含死路支線");
   assert.equal((await ack(host, "settings:update", settings)).ok, false, "回合中不可修改規則");
   const result = await win(generated, 1); assert.equal(result.routeLengths.length, 2);
   const restart = await begin(); assert.equal(restart.roundNumber, 2);

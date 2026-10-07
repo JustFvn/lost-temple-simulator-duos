@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/client.js && node --check public/renderer.js && node smoke-test.mjs && node maze-test.mjs",
-    "test:integration": "node integration-test.mjs",
-    "test:gui": "node gui-test.mjs"
+    "check": "node --check server.js && node --check public/client.js && node --check public/renderer.js && node smoke-test.mjs && node maze-test.mjs && node vision-test.mjs && node math-test.mjs && node traffic-test.mjs",
+    "test:integration": "node integration-test.mjs && node math-integration-test.mjs && node traffic-integration-test.mjs",
+    "test:gui": "node gui-test.mjs && node math-gui-test.mjs && node traffic-gui-test.mjs"
   },
   "dependencies": {
     "socket.io": "^4.8.1"
