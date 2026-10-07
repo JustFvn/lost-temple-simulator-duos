@@ -129,7 +129,7 @@ try {
   await host.locator("#doorMode").selectOption("math"); await host.locator("#layoutMode").selectOption("fixed");
   await host.locator("#fixedLayout").fill("12"); await host.locator("#scoreToWin").fill("1"); await host.locator("#scoreToWin").press("Tab");
   await guest.waitForFunction(() => document.querySelector("#doorMode").value === "math" && document.querySelector("#fixedLayout").value === "12" && document.querySelector("#scoreToWin").value === "1");
-  assert.equal(await host.locator("#viewMode").getAttribute("type"), "checkbox", "黑霧必須是獨立開關");
+  assert.equal(await host.locator("#viewMode").getAttribute("type"), "checkbox", "捲軸必須是獨立開關");
   assert(await host.locator("#shareDiscovery").isEnabled()); assert(await host.locator("#shareDiscovery").isChecked());
   await shot(host, "math-01-settings.png"); await start();
   await host.keyboard.down("ArrowLeft"); await host.locator("#mathChallenge").waitFor({ state: "visible" }); await host.keyboard.up("ArrowLeft");
@@ -157,15 +157,15 @@ try {
   await host.locator("#returnLobby").click(); await host.locator("#proceduralMode").click(); await host.locator("#viewMode").check();
   await guest.waitForFunction(() => document.querySelector("#doorMode").value === "math" && document.querySelector("#viewMode").checked && document.querySelector("#proceduralMode").getAttribute("aria-pressed") === "true");
   await start();
-  const fogRound = await host.evaluate(() => window.__round); assert.equal(fogRound.settings.doorMode, "math"); assert.equal(fogRound.settings.viewMode, "fog");
-  await shot(host, "math-05-fog-start.png");
-  const fogPath = allPaths(new Set(fogRound.openDoors))[0];
-  for (const room of fogPath.slice(1)) await moveTo(roomCX(room), roomCY(room));
+  const scrollRound = await host.evaluate(() => window.__round); assert.equal(scrollRound.settings.doorMode, "math"); assert.equal(scrollRound.settings.viewMode, "scroll");
+  await shot(host, "math-05-scroll-start.png");
+  const scrollPath = allPaths(new Set(scrollRound.openDoors))[0];
+  for (const room of scrollPath.slice(1)) await moveTo(roomCX(room), roomCY(room));
   await host.locator("#resultInfo").waitFor({ state: "visible" });
   assert.equal((await host.evaluate(() => window.__result)).winner, 0);
-  assert.equal((await host.evaluate(() => window.__reveals)).filter(reveal => reveal.state === 1).length, fogPath.length - 1, "完整通關必須答對沿途每一扇真門");
+  assert.equal((await host.evaluate(() => window.__reveals)).filter(reveal => reveal.state === 1).length, scrollPath.length - 1, "完整通關必須答對沿途每一扇真門");
   await host.locator("#nextRound").click();
-  await host.waitForFunction(previous => window.__round?.roundId !== previous && window.__position, fogRound.roundId);
+  await host.waitForFunction(previous => window.__round?.roundId !== previous && window.__position, scrollRound.roundId);
   await host.locator("#countdown").waitFor({ state: "hidden" });
   await host.locator("#board").focus(); await host.keyboard.down("ArrowLeft");
   await host.locator("#mathChallenge").waitFor({ state: "visible" }); await host.keyboard.up("ArrowLeft");
@@ -174,7 +174,7 @@ try {
   assert.equal(await host.locator("#mathChallenge").evaluate(dialog => dialog.open), false, "對手離房取消回合時關閉彈窗");
   assert(await host.locator("#mathChallenge").isHidden());
   await noOverflow(guest); assert.deepEqual(errors, []);
-  console.log("OK: 桌機／手機數學彈窗、焦點限制、Esc／背景不能略過、錯答及各自解鎖、共享情報、計時繼續、離房關閉與官方／黑霧生成迷宮通關。");
+  console.log("OK: 桌機／手機數學彈窗、焦點限制、Esc／背景不能略過、錯答及各自解鎖、共享情報、計時繼續、離房關閉與官方／捲軸生成迷宮通關。");
 } catch (error) {
   await shot(host, "math-failure-desktop.png"); await shot(guest, "math-failure-mobile.png");
   for (const page of [host, guest]) console.error("Math GUI diagnostic:", await page.evaluate(() => ({ door: window.__door, position: window.__position, reveals: window.__reveals, feedback: document.querySelector("#mathFeedback").textContent })), "gatePixel:", await gatePixel(page));

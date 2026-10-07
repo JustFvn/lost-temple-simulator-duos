@@ -7,6 +7,8 @@ const url = process.env.TEST_URL || "http://localhost:3000";
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
 const contexts = [await browser.newContext({ viewport: { width: 1440, height: 1000 } }), await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })];
 for (const [slot, context] of contexts.entries()) await context.addInitScript(slot => {
+  window.__flashPhases = [];
+  document.addEventListener("animationstart", event => { if (event.target.id === "trafficFlash") window.__flashPhases.push(event.target.dataset.phase); });
   let api;
   Object.defineProperty(window, "io", { configurable: true, get: () => api, set: original => {
     api = Object.assign((...args) => {
@@ -81,6 +83,14 @@ try {
   await phase(guest, "red", .8);
   await guest.locator('[data-key="KeyD"]').hover(); await guest.mouse.down();
   await guest.waitForFunction(() => window.__resets.some(item => item.slot === 1 && item.penalized)); await guest.mouse.up();
+  for (const page of [host, guest]) {
+    assert.deepEqual((await page.evaluate(() => window.__flashPhases)).slice(0, 3), ["green", "yellow", "red"], "每次燈號切換都觸發畫面閃爍");
+    assert.equal(await page.locator("#trafficFlash").evaluate(el => getComputedStyle(el).pointerEvents), "none", "閃爍不攔截操作");
+  }
+  await guest.emulateMedia({ reducedMotion: "reduce" });
+  assert.equal(await guest.locator("#trafficFlash").evaluate(el => getComputedStyle(el).animationName), "none", "減少動態效果時不閃爍");
+  assert.notEqual(await guest.locator("#trafficFlash").evaluate(el => getComputedStyle(el).boxShadow), "none", "減少動態效果仍保留靜態邊框提示");
+  await guest.emulateMedia({ reducedMotion: "no-preference" });
   assert.equal((await guest.evaluate(() => window.__resets.find(item => item.slot === 1))).x, 428);
   assert(await host.locator("#mathChallenge").isHidden());
   const gap = GAPS[18], pixel = await host.locator("#board").evaluate((canvas, gap) => [...canvas.getContext("2d").getImageData(Math.floor((gap.x + gap.w / 2) * canvas.width / 820), Math.floor((gap.y + gap.h / 2) * canvas.width / 820), 1, 1).data], gap);
@@ -90,14 +100,15 @@ try {
   await finishPath();
   assert.equal(await host.evaluate(() => window.__resets.filter(item => item.slot === 0 && item.penalized).length), 1, "遵守燈號可完整通關且不再受罰");
   await shot(host, "traffic-03-result.png");
+  assert.equal(await host.locator("#trafficFlash").evaluate(el => el.classList.contains("active")), false, "回合結束停止閃爍");
   await host.locator("#returnLobby").click(); await host.locator("#proceduralMode").click(); await host.locator("#viewMode").check();
   await guest.waitForFunction(() => document.querySelector("#viewMode").checked && document.querySelector("#proceduralMode").getAttribute("aria-pressed") === "true");
-  await start(); assert.equal(await host.locator("#board").getAttribute("data-view"), "fog");
-  await shot(host, "traffic-04-fog.png"); await finishPath();
-  assert.equal(await host.evaluate(() => window.__resets.filter(item => item.slot === 0 && item.penalized).length), 0, "紅綠燈搭配黑霧生成迷宮可通關");
+  await start(); assert.equal(await host.locator("#board").getAttribute("data-view"), "scroll");
+  await shot(host, "traffic-04-scroll.png"); await finishPath();
+  assert.equal(await host.evaluate(() => window.__resets.filter(item => item.slot === 0 && item.penalized).length), 0, "紅綠燈搭配捲軸生成迷宮可通關");
   await guest.locator("#leaveRoom").click(); await host.locator("#lobbyView").waitFor({ state: "visible" });
   assert(await host.locator("#trafficSignal").isHidden()); assert.deepEqual(errors, []);
-  console.log("OK: 紅綠燈桌機／手機操作、同步燈號、按住跨紅燈傳送、放開後再出發、探門記錄保留、官方及黑霧生成迷宮完整通關。");
+  console.log("OK: 桌機／手機同步燈號與切換閃爍、減少動態替代提示、紅燈傳送、探門記錄保留、官方及捲軸生成迷宮通關。");
 } catch (error) {
   await shot(host, "traffic-failure-desktop.png"); await shot(guest, "traffic-failure-mobile.png"); throw error;
 } finally { await browser.close(); }

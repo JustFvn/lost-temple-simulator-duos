@@ -19,13 +19,13 @@ try {
   await Promise.all([once(host, "connect"), once(guest, "connect")]);
   const created = await ack(host, "room:create", { name: "數學房主" });
   await ack(guest, "room:join", { code: created.room.code, name: "數學對手" });
-  const settings = { ...created.room.settings, doorMode: "math", viewMode: "fog", layoutMode: "fixed", fixedLayout: 12, shareDiscovery: true };
+  const settings = { ...created.room.settings, doorMode: "math", viewMode: "scroll", layoutMode: "fixed", fixedLayout: 12, shareDiscovery: true };
   assert.equal((await ack(host, "settings:update", { ...settings, doorMode: "invalid" })).ok, false);
   assert.equal((await ack(guest, "settings:update", settings)).ok, false);
   assert.equal((await ack(host, "settings:update", settings)).ok, true);
   let started = once(host, "round:start"); await ack(host, "round:start");
   const round = await started;
-  assert.equal(round.settings.doorMode, "math"); assert.equal(round.settings.viewMode, "fog");
+  assert.equal(round.settings.doorMode, "math"); assert.equal(round.settings.viewMode, "scroll");
   assert.equal(round.settings.shareDiscovery, true, "數學模式仍共享真假資訊");
   assert.equal((await ack(host, "door:challenge", { roundId: round.roundId, doorId: 17 })).ok, false, "倒數中不可取得題目");
   await wait(Math.max(0, round.startsAt - Date.now() + 30));
@@ -79,5 +79,5 @@ try {
   host.emit("player:state", { roundId: next.roundId, x: gap.x - 10, y: gap.y + gap.h / 2, steps: 0 });
   const fresh = await ack(host, "door:challenge", { roundId: next.roundId, doorId: trueDoor });
   assert(fresh.challenge, "新回合清除已答對的門");
-  console.log("OK: 數學題伺服器驗證、20 次錯答重試、答對共享真假但對手仍受自己的題目限制、不能代答、回合隔離與黑霧獨立搭配。");
+  console.log("OK: 數學題伺服器驗證、20 次錯答重試、答對共享真假但對手仍受自己的題目限制、不能代答、回合隔離與捲軸獨立搭配。");
 } finally { host.disconnect(); guest.disconnect(); }

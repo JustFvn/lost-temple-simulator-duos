@@ -16,8 +16,14 @@ for (const context of [hostContext, guestContext]) await context.addInitScript((
   CanvasRenderingContext2D.prototype.fillRect = function(x, y, w, h) {
     if (this.canvas.id === "board" && x === 0 && y === 0 && w === 820 && h === 820) {
       const { a, e, f } = this.getTransform(); window.__mapTransform = { a, e, f };
+      window.__drawnPlayers = [];
     }
     return fillRect.call(this, x, y, w, h);
+  };
+  const arc = CanvasRenderingContext2D.prototype.arc;
+  CanvasRenderingContext2D.prototype.arc = function(x, y, radius, ...rest) {
+    if (this.canvas.id === "board" && radius === 12) window.__drawnPlayers?.push({ x, y });
+    return arc.call(this, x, y, radius, ...rest);
   };
   let api;
   Object.defineProperty(window, "io", {
@@ -121,40 +127,42 @@ try {
   await host.locator("#viewMode").check();
   await host.locator("#scoreToWin").fill("1"); await host.locator("#scoreToWin").press("Tab");
   await guest.waitForFunction(() => document.querySelector("#viewMode").checked && document.querySelector("#scoreToWin").value === "1");
-  await shot(host, "11-fog-settings.png");
+  await shot(host, "11-scroll-settings.png");
   await host.locator("#startRound").click();
-  await host.waitForFunction(() => window.__round.settings.viewMode === "fog" && window.__position);
+  await host.waitForFunction(() => window.__round.settings.viewMode === "scroll" && window.__position);
   await host.locator("#countdown").waitFor({ state: "hidden" });
-  const fogRound = await host.evaluate(() => window.__round);
-  assert.deepEqual(fogRound.scores, [0, 0]);
-  assert.equal(await host.locator("#board").getAttribute("data-view"), "fog");
-  assert.equal(await guest.locator("#board").getAttribute("data-view"), "fog");
+  const scrollRound = await host.evaluate(() => window.__round);
+  assert.deepEqual(scrollRound.scores, [0, 0, 0, 0]);
+  assert.equal(await host.locator("#board").getAttribute("data-view"), "scroll");
+  assert.equal(await guest.locator("#board").getAttribute("data-view"), "scroll");
   const initialTransform = await host.evaluate(() => window.__mapTransform);
   assert(Math.abs(initialTransform.a - await host.locator("#board").evaluate(canvas => canvas.width / 360)) < 1e-6);
   const initialPixels = await pixelStats(host);
-  assert(initialPixels.blackRatio > .55 && initialPixels.blue > 10 && initialPixels.pink > 10, "黑霧需遮住大部分畫面，但不能遮住近處的玩家");
+  assert(initialPixels.blackRatio < .001 && initialPixels.blue > 10 && initialPixels.pink > 10, "捲軸不可有黑霧遮罩，近處的雙方都可見");
   const behindWall = await host.locator("#board").evaluate(canvas => {
     const point = { x: (392 - 392 + 180) * canvas.width / 360, y: (600 - 640 + 180) * canvas.width / 360 };
     return [...canvas.getContext("2d").getImageData(Math.round(point.x), Math.round(point.y), 1, 1).data];
   });
-  assert.deepEqual(behindWall, [5, 11, 13, 255], "牆後的房間必須完全被黑霧遮住");
-  await shot(host, "12-fog-start-desktop.png"); await shot(guest, "13-fog-start-mobile.png");
-  const fogPath = allPaths(new Set(fogRound.openDoors))[0];
-  for (const room of fogPath.slice(1, 3)) await moveTo(roomCX(room), roomCY(room));
+  assert.deepEqual(behindWall, [16, 21, 15, 255], "實牆後仍顯示房間地板，不是黑霧遮罩");
+  await shot(host, "12-scroll-start-desktop.png"); await shot(guest, "13-scroll-start-mobile.png");
+  const scrollPath = allPaths(new Set(scrollRound.openDoors))[0];
+  for (const room of scrollPath.slice(1, 3)) await moveTo(roomCX(room), roomCY(room));
   await host.waitForTimeout(250);
   const movedTransform = await host.evaluate(() => window.__mapTransform);
   assert(Math.abs(movedTransform.e - initialTransform.e) + Math.abs(movedTransform.f - initialTransform.f) > 50, "鏡頭必須實際隨角色捲動");
   const movedPixels = await pixelStats(host);
-  assert(movedPixels.blue > 10 && movedPixels.pink === 0, "遠處對手必須隱藏，自己仍需可見");
-  await shot(host, "14-fog-scrolling-desktop.png"); await shot(guest, "15-fog-opponent-hidden-mobile.png");
+  assert(movedPixels.blue > 10 && movedPixels.blackRatio < .001, "鏡頭捲動後自己可見且沒有黑霧遮罩");
+  const drawn = await host.evaluate(() => window.__drawnPlayers);
+  assert.equal(drawn.length, 2, "不再使用視線或距離隱藏對手，只由鏡頭裁切畫面");
+  await shot(host, "14-scroll-scrolling-desktop.png"); await shot(guest, "15-scroll-opponent-hidden-mobile.png");
   await noOverflow(guest);
-  for (const room of fogPath.slice(3)) await moveTo(roomCX(room), roomCY(room));
+  for (const room of scrollPath.slice(3)) await moveTo(roomCX(room), roomCY(room));
   await visible(host, "#resultInfo");
   await host.waitForFunction(() => document.querySelector("#board").dataset.view === "overview");
-  assert(await host.locator("#fogBadge").isHidden(), "結算揭曉時恢復全圖");
-  await shot(host, "16-fog-result.png");
+  assert(await host.locator("#scrollBadge").isHidden(), "結算揭曉時恢復全圖");
+  await shot(host, "16-scroll-result.png");
   await host.locator("#toggleRoutes").click();
-  await host.waitForFunction(() => document.querySelector("#board").dataset.view === "fog");
+  await host.waitForFunction(() => document.querySelector("#board").dataset.view === "scroll");
   await host.locator("#toggleRoutes").click();
   await host.waitForFunction(() => document.querySelector("#board").dataset.view === "overview");
   await host.locator("#returnLobby").click();
@@ -163,7 +171,7 @@ try {
   await host.locator("#startRound").click(); await visible(host, "#gameView");
   await host.waitForFunction(() => document.querySelector("#board").dataset.view === "overview" && window.__round.settings.viewMode === "standard");
   await guest.locator("#leaveRoom").click(); await visible(guest, "#homeView"); await visible(host, "#lobbyView");
-  assert.equal(await host.locator("#seatCount").textContent(), "1 / 2");
+  assert.equal(await host.locator("#seatCount").textContent(), "1 / 4");
   assert.deepEqual(errors, [], "瀏覽器不得有 JavaScript 錯誤");
-  console.log("OK: 桌機／手機雙人通關、黑霧遮擋、對手顯隱、捲軸鏡頭跟隨、模式同步、結算揭曉及一般模式切回。截圖：test-artifacts/");
+  console.log("OK: 桌機／手機雙人通關、捲軸無黑霧遮罩、牆後房間可見、雙方正常繪製、鏡頭跟隨、模式同步與結算全圖切換。");
 } finally { await browser.close(); }

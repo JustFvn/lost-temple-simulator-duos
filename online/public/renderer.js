@@ -1,7 +1,8 @@
 import { DOORS } from "./layouts.js";
 import { SCALE, ROOM, WALL, BOARD, PR, START, GOAL, pos, GAPS } from "./geometry.js";
 import { roomCX, roomCY } from "./geometry.js";
-import { VIEW_SIZE, SIGHT_RADIUS, visibilityPolygon, isPointVisible } from "./vision.js";
+import { VIEW_SIZE } from "./vision.js";
+import { PLAYER_STYLES } from "./players.js";
 const BOARD_THEME = {
   dark: {
     mortar:  "#39443C",
@@ -127,34 +128,10 @@ function paintBoard(ctx, px, st) {
   }
 
   if (st.paths) drawPaths(ctx, st.paths);
-  if (st.players) st.players.forEach((p, i) => {
-    if (!st.fog || i === st.fog.slot || isPointVisible(st.fog.origin, p, st.fog.walls)) drawPlayer(ctx, p, i);
-  });
+  if (st.players) st.players.forEach((p, i) => { if (p) drawPlayer(ctx, p, p.slot ?? i); });
   else if (st.player) drawPlayer(ctx, st.player, 0);
 
   drawStartMark(ctx);
-  if (st.fog) drawFog(ctx, st.camera, st.fog);
-  ctx.restore();
-}
-
-function drawFog(ctx, camera, fog) {
-  const polygon = visibilityPolygon(fog.origin, fog.walls);
-  const left = camera.x - VIEW_SIZE / 2, top = camera.y - VIEW_SIZE / 2;
-  const trace = () => {
-    ctx.moveTo(polygon[0].x, polygon[0].y);
-    for (const point of polygon.slice(1)) ctx.lineTo(point.x, point.y);
-    ctx.closePath();
-  };
-  ctx.save();
-  ctx.beginPath(); ctx.rect(left, top, VIEW_SIZE, VIEW_SIZE); trace();
-  ctx.fillStyle = "#050b0d"; ctx.fill("evenodd");
-  ctx.beginPath(); trace(); ctx.clip();
-  const gradient = ctx.createRadialGradient(fog.origin.x, fog.origin.y, 0, fog.origin.x, fog.origin.y, SIGHT_RADIUS);
-  gradient.addColorStop(0, "rgba(5,11,13,0)");
-  gradient.addColorStop(.55, "rgba(5,11,13,0)");
-  gradient.addColorStop(.82, "rgba(5,11,13,.35)");
-  gradient.addColorStop(1, "rgba(5,11,13,1)");
-  ctx.fillStyle = gradient; ctx.fillRect(left, top, VIEW_SIZE, VIEW_SIZE);
   ctx.restore();
 }
 
@@ -214,7 +191,7 @@ function drawPaths(ctx, paths) {
 }
 
 function drawPlayer(ctx, p, index) {
-  const color = index === 0 ? "#35A7FF" : "#FF4F81";
+  const color = PLAYER_STYLES[index].color;
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = 5;
   ctx.beginPath(); ctx.arc(p.x, p.y, PR + 2, 0, Math.PI * 2);

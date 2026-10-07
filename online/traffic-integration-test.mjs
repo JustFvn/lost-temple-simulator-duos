@@ -22,14 +22,14 @@ try {
   await Promise.all([once(host, "connect"), once(guest, "connect")]);
   const created = await ack(host, "room:create", { name: "紅綠燈房主" });
   await ack(guest, "room:join", { code: created.room.code, name: "紅綠燈對手" });
-  const settings = { ...created.room.settings, doorMode: "traffic", viewMode: "fog", mapMode: "procedural", scoreToWin: 1 };
+  const settings = { ...created.room.settings, doorMode: "traffic", viewMode: "scroll", mapMode: "procedural", scoreToWin: 1 };
   assert.equal((await ack(guest, "settings:update", settings)).ok, false);
   assert.equal((await ack(host, "settings:update", settings)).ok, true);
   const starts = [once(host, "round:start"), once(guest, "round:start")];
   await ack(host, "round:start"); const [round, guestRound] = await Promise.all(starts);
   assert.deepEqual(round.traffic, guestRound.traffic);
   assert.equal(round.startsAt, guestRound.startsAt);
-  assert.equal(round.settings.viewMode, "fog"); assert.equal(round.settings.mapMode, "procedural");
+  assert.equal(round.settings.viewMode, "scroll"); assert.equal(round.settings.mapMode, "procedural");
   assert.equal((await ack(host, "goal:reached", { roundId: round.roundId, revision: 0 })).ok, false);
   let phase = await waitPhase(round, "green");
   const moved = once(guest, "player:state");

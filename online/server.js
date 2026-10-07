@@ -9,6 +9,7 @@ import { allPaths, GAPS, PR } from "./public/geometry.js";
 import { generateMaze } from "./maze.js";
 import { generateMathProblem, isCorrectAnswer } from "./math-challenge.js";
 import { createTrafficSchedule, trafficState, TRAFFIC_GRACE_MS } from "./public/traffic.js";
+import { MAX_PLAYERS, emptyScores, spawnPosition, availableSlot } from "./public/players.js";
 
 const ROOT = fileURLToPath(new URL("./public/", import.meta.url));
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
@@ -45,14 +46,15 @@ function cleanSettings(value = {}) {
   if (!Number.isInteger(scoreToWin) || scoreToWin < 1 || scoreToWin > 99) throw new Error("勝利分數必須是 1–99 的整數。");
   if (!Number.isInteger(fixedLayout) || fixedLayout < 0 || fixedLayout >= LAYOUTS.length) throw new Error("佈局編號必須是 0–124 的整數。");
   if (!["official", "procedural"].includes(value.mapMode)) throw new Error("無效的迷宮模式。");
-  const viewMode = value.viewMode ?? "standard";
-  if (!["standard", "fog"].includes(viewMode)) throw new Error("無效的探索模式。");
+  // Accept the old wire value from cached clients, but never enable fog again.
+  const viewMode = value.viewMode === "fog" ? "scroll" : value.viewMode ?? "standard";
+  if (!["standard", "scroll"].includes(viewMode)) throw new Error("無效的鏡頭模式。");
   const doorMode = value.doorMode ?? "normal";
   if (!["normal", "math", "traffic"].includes(doorMode)) throw new Error("無效的遊戲玩法。");
   return { mapMode: value.mapMode, viewMode, doorMode, drawMode: value.drawMode === "uniform" ? "uniform" : "weighted", layoutMode: value.layoutMode === "fixed" ? "fixed" : "random", fixedLayout, scoreToWin, shareDiscovery: value.shareDiscovery !== false, revealAfterRound: value.revealAfterRound !== false };
 }
 function publicRoom(room) {
-  return { code: room.code, hostId: room.hostId, settings: room.settings, status: room.status, scores: room.scores, roundNumber: room.roundNumber, players: [...room.players].map(([id, player]) => ({ id, slot: player.slot, name: player.name })) };
+  return { code: room.code, hostId: room.hostId, maxPlayers: MAX_PLAYERS, settings: room.settings, status: room.status, scores: room.scores, roundNumber: room.roundNumber, players: [...room.players].map(([id, player]) => ({ id, slot: player.slot, name: player.name })) };
 }
 const broadcast = room => io.to(room.code).emit("room:state", publicRoom(room));
 function pickLayout(settings) {
@@ -76,7 +78,7 @@ function leave(socket) {
     }
     rooms.delete(room.code);
   } else {
-    room.status = "lobby"; room.scores = [0, 0]; room.roundNumber = 0; room.roundId = null;
+    room.status = "lobby"; room.scores = emptyScores(); room.roundNumber = 0; room.roundId = null;
     broadcast(room);
   }
 }
@@ -89,7 +91,7 @@ io.on("connection", socket => {
   socket.on("room:create", (data, ack) => {
     if (findRoom(socket)) return fail(ack, "你已經在房間內。");
     const code = roomCode();
-    const room = { code, hostId: socket.id, settings: { ...DEFAULT_SETTINGS }, status: "lobby", scores: [0, 0], roundNumber: 0, roundId: null, players: new Map([[socket.id, { slot: 0, name: cleanName(data?.name, "主辦者") }]]) };
+    const room = { code, hostId: socket.id, settings: { ...DEFAULT_SETTINGS }, status: "lobby", scores: emptyScores(), roundNumber: 0, roundId: null, players: new Map([[socket.id, { slot: 0, name: cleanName(data?.name, "主辦者") }]]) };
     rooms.set(code, room); socket.data.roomCode = code; socket.join(code);
     reply(ack, { ok: true, slot: 0, room: publicRoom(room) }); broadcast(room);
   });
@@ -97,11 +99,14 @@ io.on("connection", socket => {
     if (findRoom(socket)) return fail(ack, "你已經在房間內。");
     const room = rooms.get(String(data?.code || "").trim().toUpperCase());
     if (!room) return fail(ack, "找不到房間，請確認房號或請房主重新建立。");
-    if (room.players.size >= 2) return fail(ack, "房間已滿。");
+    if (room.players.size >= MAX_PLAYERS) return fail(ack, "房間已滿（最多 4 人）。");
     if (room.status === "playing") return fail(ack, "對戰已開始。");
-    room.players.set(socket.id, { slot: 1, name: cleanName(data?.name, "挑戰者") });
+    const slot = availableSlot(room.players.values());
+    room.players.set(socket.id, { slot, name: cleanName(data?.name, `挑戰者 ${slot + 1}`) });
+    // A new participant starts a fresh match; never inherit a vacated score.
+    room.scores = emptyScores(); room.roundNumber = 0; room.roundId = null; room.status = "lobby";
     socket.data.roomCode = room.code; socket.join(room.code);
-    reply(ack, { ok: true, slot: 1, room: publicRoom(room) }); broadcast(room);
+    reply(ack, { ok: true, slot, room: publicRoom(room) }); broadcast(room);
   });
   socket.on("room:leave", (_, ack) => { leave(socket); reply(ack, { ok: true }); });
   socket.on("settings:update", (data, ack) => {
@@ -111,7 +116,7 @@ io.on("connection", socket => {
     try {
       const settings = cleanSettings(data);
       if (JSON.stringify(settings) !== JSON.stringify(room.settings)) {
-        room.settings = settings; room.scores = [0, 0]; room.roundNumber = 0; room.status = "lobby";
+        room.settings = settings; room.scores = emptyScores(); room.roundNumber = 0; room.status = "lobby";
       }
       broadcast(room); reply(ack, { ok: true });
     } catch (error) { fail(ack, error.message); }
@@ -119,16 +124,16 @@ io.on("connection", socket => {
   socket.on("round:start", (_, ack) => {
     const room = findRoom(socket);
     if (!room || room.hostId !== socket.id) return fail(ack, "只有房主可以開始回合。");
-    if (room.players.size !== 2) return fail(ack, "需要兩位玩家。");
+    if (room.players.size < 2) return fail(ack, "至少需要兩位玩家，最多四人。");
     if (room.status === "playing") return fail(ack, "回合已經開始。");
-    if (room.scores.some(score => score >= room.settings.scoreToWin)) { room.scores = [0, 0]; room.roundNumber = 0; }
+    if (room.scores.some(score => score >= room.settings.scoreToWin)) { room.scores = emptyScores(); room.roundNumber = 0; }
     room.layoutId = room.settings.mapMode === "official" ? pickLayout(room.settings) : null;
     room.openDoors = room.layoutId === null ? generateMaze().openDoors : LAYOUTS[room.layoutId][1];
     room.open = new Set(room.openDoors); room.roundId = randomUUID(); room.roundNumber++;
     room.status = "playing"; room.startsAt = Date.now() + 3500;
     room.traffic = room.settings.doorMode === "traffic" ? createTrafficSchedule() : null;
-    for (const player of room.players.values()) { player.x = 392 + player.slot * 36; player.y = 730; player.steps = 0; player.revision = 0; player.solvedDoors = new Set(); player.challenge = null; }
-    io.to(room.code).emit("round:start", { roundId: room.roundId, roundNumber: room.roundNumber, layoutId: room.layoutId, openDoors: room.openDoors, settings: room.settings, scores: room.scores, startsAt: room.startsAt, serverNow: Date.now(), countdownMs: 3500, traffic: room.traffic });
+    for (const player of room.players.values()) { Object.assign(player, spawnPosition(player.slot)); player.steps = 0; player.revision = 0; player.solvedDoors = new Set(); player.challenge = null; }
+    io.to(room.code).emit("round:start", { roundId: room.roundId, roundNumber: room.roundNumber, layoutId: room.layoutId, openDoors: room.openDoors, settings: room.settings, scores: room.scores, startsAt: room.startsAt, serverNow: Date.now(), countdownMs: 3500, traffic: room.traffic, players: [...room.players.values()].map(({ slot, x, y, steps, revision }) => ({ slot, x, y, steps, revision })) });
     broadcast(room); reply(ack, { ok: true });
   });
   socket.on("player:state", data => {
@@ -144,7 +149,7 @@ io.on("connection", socket => {
       const moved = Math.hypot(x - player.x, y - player.y) > .75;
       const redInput = data.moving === true && data.trafficIndex === signal.index;
       if (signal.phase === "red" && (redInput || (signal.phaseElapsed >= TRAFFIC_GRACE_MS && (moved || data.moving === true)))) {
-        player.x = 392 + player.slot * 36; player.y = 730; player.revision++;
+        Object.assign(player, spawnPosition(player.slot)); player.revision++;
         io.to(room.code).emit("player:reset", { ...correction(), penalized: true });
         return;
       }

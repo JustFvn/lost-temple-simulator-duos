@@ -3,6 +3,7 @@ import { BOARD, ROOM, WALL, PR, SPEED, START_I, GOAL_I, pos, GAPS, allPaths, bui
 import { paintBoard } from "./renderer.js";
 import { cameraTarget, followCamera } from "./vision.js";
 import { trafficState } from "./traffic.js";
+import { MAX_PLAYERS, PLAYER_STYLES } from "./players.js";
 
 const $ = selector => document.querySelector(selector);
 const socket = window.io();
@@ -24,7 +25,8 @@ function notify(message) {
 function showView(view) {
   currentView = view; held.clear();
   for (const name of ["home", "lobby", "game"]) $(`#${name}View`).hidden = name !== view;
-  if (view === "game") fitCanvas();
+  if (view === "game") { fitCanvas(); if (run?.traffic) run.trafficPhase = null; }
+  else clearTrafficFlash();
 }
 function request(event, data = {}) {
   return new Promise((resolve, reject) => {
@@ -52,7 +54,7 @@ socket.on("connect", () => {
 function clearRoom() {
   clearQuiz();
   room = null; run = null; slot = -1; held.clear(); clearTimeout(settingsTimer);
-  blockedControls.clear(); $("#trafficSignal").hidden = true;
+  blockedControls.clear(); $("#trafficSignal").hidden = true; clearTrafficFlash();
   $("#roomBadge").hidden = $("#leaveRoom").hidden = true;
   history.replaceState(null, "", location.pathname); showView("home");
 }
@@ -102,7 +104,7 @@ $("#copyInvite").addEventListener("click", async () => {
 
 function applySettings(settings) {
   for (const key of ["doorMode", "layoutMode", "drawMode", "fixedLayout", "scoreToWin"]) $(`#${key}`).value = settings[key];
-  $("#viewMode").checked = settings.viewMode === "fog";
+  $("#viewMode").checked = settings.viewMode === "scroll" || settings.viewMode === "fog";
   for (const key of ["shareDiscovery", "revealAfterRound"]) $(`#${key}`).checked = settings[key];
   for (const button of document.querySelectorAll("[data-mode]")) {
     const selected = button.dataset.mode === settings.mapMode;
@@ -114,11 +116,11 @@ function syncSettingsDisplay() {
   const generated = $("#proceduralMode").classList.contains("selected");
   $("#officialSettings").hidden = generated;
   $("#modeDescription").textContent = generated ? "不抽選官方關卡。程式每回合生成新迷宮，沒有死路，兩條分岔都能抵達 E3。" : "使用真實佈局資料，可依官方機率抽選。";
-  const fog = $("#viewMode").checked, math = $("#doorMode").value === "math", traffic = $("#doorMode").value === "traffic";
-  $("#viewDescription").textContent = fog ? "鏡頭跟隨自己，遠處及牆後被黑霧遮住" : "獨立開關，可搭配任意地圖與探門模式";
+  const scroll = $("#viewMode").checked, math = $("#doorMode").value === "math", traffic = $("#doorMode").value === "traffic";
+  $("#viewDescription").textContent = scroll ? "放大盤面、鏡頭跟隨自己；沒有黑霧或牆後遮擋" : "獨立開關，可搭配任意地圖與玩法";
   $("#doorDescription").textContent = math ? "每人撞門都要回答簡單加減乘除題；即使真假已共享，仍須自己答對才能解除限制。" : "碰到未知的門，即可知道真假。";
   if (traffic) $("#doorDescription").textContent = "雙方同步紅綠燈：綠燈前進、黃燈準備停，紅燈移動就傳回 A3 起點。探門記錄保留。";
-  $("#shareDiscoveryHint").textContent = math ? "答對後共享開關資訊，但每人仍要自己答對才能通過" : fog ? "同步探門記錄，但不會揭開遠處的黑霧" : "對方發現的真假門，你也看得見";
+  $("#shareDiscoveryHint").textContent = math ? "答對後共享開關資訊，但每人仍要自己答對才能通過" : "對方發現的真假門，你也看得見";
   const fixed = $("#layoutMode").value === "fixed";
   $("#fixedLayoutField").hidden = !fixed; $("#drawModeField").hidden = fixed;
   for (const button of document.querySelectorAll("[data-score]")) button.classList.toggle("selected", button.dataset.score === $("#scoreToWin").value);
@@ -128,7 +130,7 @@ function readSettings() {
     const input = $(`#${id}`);
     if (!input.checkValidity() || !input.value) { input.reportValidity(); throw new Error(id === "scoreToWin" ? "勝利分數請輸入 1–99 的整數。" : "佈局編號請輸入 0–124。"); }
   }
-  return { mapMode: $("#proceduralMode").classList.contains("selected") ? "procedural" : "official", viewMode: $("#viewMode").checked ? "fog" : "standard", doorMode: $("#doorMode").value, drawMode: $("#drawMode").value, layoutMode: $("#layoutMode").value, fixedLayout: Number($("#fixedLayout").value), scoreToWin: Number($("#scoreToWin").value), shareDiscovery: $("#shareDiscovery").checked, revealAfterRound: $("#revealAfterRound").checked };
+  return { mapMode: $("#proceduralMode").classList.contains("selected") ? "procedural" : "official", viewMode: $("#viewMode").checked ? "scroll" : "standard", doorMode: $("#doorMode").value, drawMode: $("#drawMode").value, layoutMode: $("#layoutMode").value, fixedLayout: Number($("#fixedLayout").value), scoreToWin: Number($("#scoreToWin").value), shareDiscovery: $("#shareDiscovery").checked, revealAfterRound: $("#revealAfterRound").checked };
 }
 async function saveSettings() {
   clearTimeout(settingsTimer);
@@ -153,23 +155,25 @@ function updateRoom(data) {
   room = data; slot = room.players.find(player => player.id === socket.id)?.slot ?? slot;
   $("#roomBadge").hidden = $("#leaveRoom").hidden = false;
   $("#roomBadge").textContent = room.code; $("#roomCode").textContent = room.code;
-  $("#seatCount").textContent = `${room.players.length} / 2`;
-  for (let i = 0; i < 2; i++) {
+  $("#seatCount").textContent = `${room.players.length} / ${MAX_PLAYERS}`;
+  $("#scoreboard").style.setProperty("--active-players", Math.max(2, room.players.length));
+  for (let i = 0; i < MAX_PLAYERS; i++) {
     const player = room.players.find(p => p.slot === i);
     $(`#seat${i}Name`).textContent = player?.name || "等待冒險者";
     $(`#seat${i}`).classList.toggle("empty", !player);
+    $(`#seat${i}State`).textContent = player ? "已加入" : "等待中";
+    $(`#scorePlayer${i}`).hidden = !player;
     $(`#p${i + 1}Name`).textContent = `${player?.name || "等待中"}${slot === i ? "（你）" : ""}`;
     $(`#p${i + 1}Score`).textContent = room.scores[i];
   }
-  $("#seat1State").textContent = room.players.length === 2 ? "已加入" : "等待中";
   $("#lobbySubtitle").textContent = isHost() ? "你是房主。選好規則，邀請朋友一起出發。" : "你是挑戰者。房主會設定規則並開始對戰。";
   $("#hostOnlyNote").textContent = isHost() ? "房主設定" : "由房主設定";
   $("#hostSettings").disabled = !isHost() || room.status === "playing";
   $("#settingsNote").textContent = room.status === "playing" ? "回合進行中，設定已鎖定；回合結束後可修改。" : "設定自動同步給對手；修改規則會重置比分。";
   applySettings(room.settings);
   $("#matchTarget").textContent = `先得 ${room.settings.scoreToWin} 分獲勝`;
-  $("#startRound").disabled = starting || (room.status !== "playing" && (!isHost() || room.players.length !== 2));
-  $("#startRound").textContent = room.status === "playing" ? "返回對戰 →" : room.players.length !== 2 ? "等待對手加入" : isHost() ? (room.roundNumber ? "繼續對戰 →" : "開始對戰 →") : "等待房主開始";
+  $("#startRound").disabled = starting || (room.status !== "playing" && (!isHost() || room.players.length < 2));
+  $("#startRound").textContent = room.status === "playing" ? "返回對戰 →" : room.players.length < 2 ? "等待對手加入（至少 2 人）" : isHost() ? (room.roundNumber ? "繼續對戰 →" : `開始 ${room.players.length} 人對戰 →`) : "等待房主開始";
   if (room.status === "lobby" && (run || previousStatus === "ended" || previousStatus === "playing")) {
     if (previousStatus === "playing") notify("對手已離開，回合已取消、比分已重置。");
     clearQuiz(); run = null; blockedControls.clear(); $("#trafficSignal").hidden = true; showView("lobby");
@@ -195,6 +199,17 @@ $("#toggleRoutes").addEventListener("click", () => {
 });
 
 const mathDialog = $("#mathChallenge");
+function clearTrafficFlash() {
+  $("#trafficFlash").classList.remove("active");
+}
+function flashTraffic(phase) {
+  const overlay = $("#trafficFlash");
+  overlay.dataset.phase = phase;
+  overlay.classList.remove("active");
+  // One soft pulse per phase change, never a continuously flashing screen.
+  void overlay.offsetWidth;
+  overlay.classList.add("active");
+}
 // Only a correct answer or the end of the round can dismiss the question.
 mathDialog.addEventListener("cancel", event => event.preventDefault());
 function updateMathDoorStatus(game, doorId) {
@@ -278,42 +293,43 @@ $("#mathForm").addEventListener("submit", async event => {
 socket.on("round:start", data => {
   if (!room) return;
   clearQuiz();
-  held.clear(); blockedControls.clear(); lastSent = 0;
+  held.clear(); blockedControls.clear(); clearTrafficFlash(); lastSent = 0;
   // Convert the shared server start time to a monotonic local deadline.
   const wait = Math.max(0, data.startsAt - (Date.now() + serverOffset));
-  run = { ...data, open: new Set(data.openDoors), walls: buildWalls(new Set(data.openDoors)), doors: new Int8Array(DOORS.length), visited: new Uint8Array(25), flash: new Map(), players: [0, 1].map(i => ({ x: 392 + 36 * i, y: 730, room: START_I, steps: 0, revision: 0 })), started: performance.now() + wait, elapsed: 0, done: false, goalPending: false, showRoutes: false };
+  run = { ...data, open: new Set(data.openDoors), walls: buildWalls(new Set(data.openDoors)), doors: new Int8Array(DOORS.length), visited: new Uint8Array(25), flash: new Map(), players: Array(MAX_PLAYERS).fill(null), started: performance.now() + wait, elapsed: 0, done: false, goalPending: false, showRoutes: false };
+  for (const player of data.players) run.players[player.slot] = { ...player, room: START_I };
   run.visited[START_I] = 1;
   run.paths = allPaths(run.open);
   run.unlocked = new Set(); run.solved = new Set(); run.quiz = null;
   if (data.settings.doorMode === "math") run.walls = buildWalls(run.unlocked);
   run.camera = cameraTarget(run.players[slot]);
-  const fog = data.settings.viewMode === "fog";
-  $("#gameModeLabel").textContent = fog ? "FOG EXPLORATION" : data.settings.mapMode === "procedural" ? "GENERATED MAZE" : "OFFICIAL MAZE";
-  $("#raceTitle").textContent = fog ? "在黑霧中前進。" : "選你的路。";
-  $("#raceDescription").textContent = fog ? "鏡頭跟著你移動，遠處與牆後都被黑霧遮住。記住探過的門，向北尋找 E3 王冠。" : "摸清真假門，選好你的路線。找到王冠，拿下這一分。";
+  const scroll = data.settings.viewMode === "scroll" || data.settings.viewMode === "fog";
+  $("#gameModeLabel").textContent = scroll ? "SCROLLING CAMERA" : data.settings.mapMode === "procedural" ? "GENERATED MAZE" : "OFFICIAL MAZE";
+  $("#raceTitle").textContent = scroll ? "跟著鏡頭前進。" : "選你的路。";
+  $("#raceDescription").textContent = scroll ? "盤面放大，鏡頭跟著你移動。畫面內的房間與對手都看得見，沒有黑霧遮擋；未知門仍要碰過才揭曉。" : "摸清真假門，選好你的路線。找到王冠，拿下這一分。";
   if (data.settings.doorMode === "math") {
-    $("#gameModeLabel").textContent = fog ? "MATH GATES · FOG ON" : "MATH GATES";
+    $("#gameModeLabel").textContent = scroll ? "MATH GATES · SCROLLING" : "MATH GATES";
     $("#raceTitle").textContent = "答對，才揭曉。";
     $("#raceDescription").textContent = "撞門先答加減乘除題，答錯可一直重試。即使已共享真假資訊，仍要自己答對才能通過；計時與對手不會暫停。";
   }
   $("#trafficSignal").hidden = !data.traffic;
   if (data.traffic) {
-    $("#gameModeLabel").textContent = fog ? "RED LIGHT · FOG ON" : "RED LIGHT / GREEN LIGHT";
+    $("#gameModeLabel").textContent = scroll ? "RED LIGHT · SCROLLING" : "RED LIGHT / GREEN LIGHT";
     $("#raceTitle").textContent = "紅燈停，綠燈走。";
-    $("#raceDescription").textContent = "雙方共用燈號，黃燈預告後就要停下。紅燈時按移動鍵也算違規，會被傳回起點；已探過的門保留。";
+    $("#raceDescription").textContent = "所有玩家共用燈號，黃燈預告後就要停下。紅燈時按移動鍵也算違規，會被傳回起點；已探過的門保留。";
   }
-  canvas.setAttribute("aria-label", fog ? "黑霧探索迷宮，捲動鏡頭跟隨你的角色" : "迷宮對戰盤面");
+  canvas.setAttribute("aria-label", scroll ? "捲軸迷宮，放大鏡頭跟隨你的角色，沒有黑霧遮擋" : "迷宮對戰盤面");
   $("#roundTitle").textContent = `第 ${data.roundNumber} 回合`;
-  $("#mapLabel").textContent = data.layoutId === null ? "程式生成 · 兩條分岔" : `官方佈局 #${data.layoutId}`;
   $("#raceInfo").hidden = false; $("#resultInfo").hidden = true;
   $("#countdown").hidden = false; $("#countdownValue").textContent = "3";
-  $("#yourSeat").textContent = `你是 ${slot + 1}P · ${slot === 0 ? "藍色" : "粉色"}`;
-  $("#yourSeat").classList.toggle("pink", slot === 1);
-  for (let i = 0; i < 2; i++) $(`#p${i + 1}Score`).textContent = data.scores[i];
+  $("#yourSeat").textContent = `你是 ${slot + 1}P · ${PLAYER_STYLES[slot].name}`;
+  $("#yourSeat").className = `your-seat ${PLAYER_STYLES[slot].className}`;
+  for (let i = 0; i < MAX_PLAYERS; i++) { $(`#p${i + 1}Score`).textContent = data.scores[i]; $(`#scorePlayer${i}`).classList.remove("winner"); }
   showView("game");
 });
 socket.on("player:state", data => {
   if (!run || run.done || data.roundId !== run.roundId || data.slot === slot) return;
+  if (!run.players[data.slot]) return;
   Object.assign(run.players[data.slot], { x: data.x, y: data.y, steps: data.steps });
   if (run.settings.shareDiscovery) markRoom(run.players[data.slot], false);
 });
@@ -327,7 +343,7 @@ socket.on("player:reset", data => {
     for (const key of held) blockedControls.add(key);
     held.clear(); run.goalPending = false; run.camera = cameraTarget(player);
     if (changed) notify("紅燈移動！已傳回 A3 起點，放開方向鍵後再出發。");
-  } else if (changed) notify("對手紅燈移動，被傳回起點！");
+  } else if (changed) notify(`${data.slot + 1}P 紅燈移動，被傳回起點！`);
 });
 socket.on("door:discover", data => {
   if (!run || run.done || data.roundId !== run.roundId) return;
@@ -336,7 +352,7 @@ socket.on("door:discover", data => {
       // Shared knowledge never solves another player's question or unlocks it.
       run.doors[data.doorId] = data.state; run.flash.set(data.doorId, 1);
       if (run.quiz?.doorId === data.doorId) updateMathDoorStatus(run, data.doorId);
-      if (data.by !== slot) notify(`對手答對了：${data.state === 1 ? "真門（開）" : "假門（關）"}。你仍需答對自己的題目。`);
+      if (data.by !== slot) notify(`${data.by + 1}P 答對了：${data.state === 1 ? "真門（開）" : "假門（關）"}。你仍需答對自己的題目。`);
     }
     return;
   }
@@ -345,6 +361,7 @@ socket.on("door:discover", data => {
 socket.on("round:end", data => {
   if (!run || data.roundId !== run.roundId) return;
   clearQuiz();
+  clearTrafficFlash();
   run.done = true; run.elapsed = data.elapsedMs; held.clear();
   for (const player of data.players) Object.assign(run.players[player.slot], player);
   run.showRoutes = run.settings.revealAfterRound;
@@ -353,14 +370,15 @@ socket.on("round:end", data => {
   const name = room.players.find(p => p.slot === data.winner)?.name || `${data.winner + 1}P`;
   $("#resultKicker").textContent = matchDone ? "MATCH COMPLETE" : "ROUND COMPLETE";
   $("#resultTitle").textContent = matchDone ? won ? "你贏得整場！" : "對手贏得整場" : won ? "這一分，你的。" : "對手先到一步。";
-  $("#resultDescription").textContent = `${name} 先抵達王冠，${matchDone ? `率先拿下 ${run.settings.scoreToWin} 分。` : `目前比分 ${data.scores.join(" : ")}。`}`;
+  const scores = room.players.slice().sort((a, b) => a.slot - b.slot).map(player => `${player.slot + 1}P ${data.scores[player.slot]}`).join(" / ");
+  $("#resultDescription").textContent = `${name} 先抵達王冠，${matchDone ? `率先拿下 ${run.settings.scoreToWin} 分。` : `目前比分 ${scores}。`}`;
   $("#resultTime").textContent = `${fmt(data.elapsedMs)} 秒`; $("#resultSteps").textContent = `${data.steps} 步`;
   $("#routeStat").hidden = $("#toggleRoutes").hidden = !run.settings.revealAfterRound;
   $("#routeLengths").textContent = `${data.routeLengths?.join(" / ") || "—"} 步`;
   $("#toggleRoutes").textContent = "隱藏路線";
   $("#nextRound").hidden = !isHost(); $("#guestWait").hidden = isHost();
   $("#nextRound").textContent = matchDone ? "再來一場 →" : "下一回合 →";
-  for (let i = 0; i < 2; i++) $(`#p${i + 1}Score`).textContent = data.scores[i];
+  for (let i = 0; i < MAX_PLAYERS; i++) { $(`#p${i + 1}Score`).textContent = data.scores[i]; $(`#scorePlayer${i}`).classList.toggle("winner", i === data.winner); }
   showView("game");
 });
 
@@ -453,22 +471,27 @@ function frame(now) {
     $("#clock").textContent = fmt(run.elapsed);
     if (run.traffic) {
       const signal = trafficState(run.traffic, run.elapsed), phase = run.done ? "done" : remaining > 0 ? "ready" : signal.phase;
+      if (phase !== run.trafficPhase) {
+        run.trafficPhase = phase;
+        if (currentView === "game" && ["green", "yellow", "red"].includes(phase)) flashTraffic(phase);
+        else clearTrafficFlash();
+      }
       $("#trafficSignal").dataset.phase = phase;
       const labels = { ready: "準備開始", green: "綠燈 · 可以前進", yellow: "黃燈 · 準備停下", red: "紅燈 · 不要移動", done: "回合結束" };
       if ($("#trafficLabel").textContent !== labels[phase]) $("#trafficLabel").textContent = labels[phase];
       $("#trafficCountdown").textContent = phase === "ready" || phase === "done" ? "—" : `${(signal.remaining / 1000).toFixed(1)}s`;
     }
-    for (let i = 0; i < 2; i++) $(`#p${i + 1}Steps`).textContent = `${run.players[i].steps} 步`;
+    for (let i = 0; i < MAX_PLAYERS; i++) $(`#p${i + 1}Steps`).textContent = `${run.players[i]?.steps ?? 0} 步`;
     for (const [key, value] of run.flash) { const next = value - dt * 3.2; if (next <= 0) run.flash.delete(key); else run.flash.set(key, next); }
     if (currentView === "game") {
       const localPlayer = run.players[slot];
       run.camera = followCamera(run.camera, localPlayer, dt, reducedMotion);
-      const fog = run.settings.viewMode === "fog" && !run.showRoutes;
-      canvas.dataset.view = fog ? "fog" : "overview";
-      $("#fogBadge").hidden = !fog;
-      $("#boardHint").textContent = fog ? `${String.fromCharCode(69 - Math.floor(localPlayer.room / 5))}${localPlayer.room % 5 + 1} · 王冠位於 E3 ↑` : "A3 出發 → E3 王冠";
+      const scroll = ["scroll", "fog"].includes(run.settings.viewMode) && !run.showRoutes;
+      canvas.dataset.view = scroll ? "scroll" : "overview";
+      $("#scrollBadge").hidden = !scroll;
+      $("#boardHint").textContent = scroll ? `${String.fromCharCode(69 - Math.floor(localPlayer.room / 5))}${localPlayer.room % 5 + 1} · 王冠位於 E3 ↑` : "A3 出發 → E3 王冠";
       const doors = run.showRoutes ? Int8Array.from(DOORS, (_, i) => run.open.has(i) ? 1 : 2) : run.doors;
-      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, paths: run.showRoutes ? run.paths : null, flash: run.flash, camera: fog ? run.camera : null, fog: fog ? { origin: localPlayer, walls: run.walls, slot } : null });
+      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, paths: run.showRoutes ? run.paths : null, flash: run.flash, camera: scroll ? run.camera : null });
     }
   }
   requestAnimationFrame(frame);

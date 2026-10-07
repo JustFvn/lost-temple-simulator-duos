@@ -16,11 +16,11 @@
     <main>
       <section id="homeView" class="home-view view">
         <div class="hero">
-          <div class="eyebrow"><span class="tiny-line"></span> 2 PLAYERS · ONE CROWN</div>
+          <div class="eyebrow"><span class="tiny-line"></span> 2–4 PLAYERS · ONE CROWN</div>
           <h1>兩條路。<br>一頂<span>王冠。</span></h1>
-          <p class="hero-copy">摸清真假門，搶先找到出口。<br>邀請一位朋友，一起踏進未知的神廟。</p>
+          <p class="hero-copy">摸清真假門，搶先找到出口。<br>邀請最多三位朋友，一起踏進未知的神廟。</p>
           <div class="hero-board" aria-hidden="true"><div id="heroTiles" class="hero-tiles"></div><svg viewBox="0 0 260 260"><path d="M130 230H78V182H26V130H78V78H130V26M130 230H182V182H234V130H182V78H130V26"/><circle cx="130" cy="230" r="7"/><path class="hero-crown" d="M115 32V16l10 7 5-14 5 14 10-7v16Z"/></svg><div class="hero-label">EXPLORE. CHOOSE. WIN.</div></div>
-          <div class="hero-facts"><span>雙人私人房</span><span>即時競速</span><span>官方 / 生成迷宮</span></div>
+          <div class="hero-facts"><span>2–4 人私人房</span><span>即時競速</span><span>官方 / 生成迷宮</span></div>
         </div>
         <div class="entry-panel panel">
           <span class="eyebrow">ENTER THE TEMPLE</span><h2 id="entryTitle">準備迎接挑戰？</h2><p id="entryHint" class="muted">輸入暱稱，再建立或加入私人房間。</p>
@@ -36,10 +36,12 @@
         <div class="page-heading"><div><span class="eyebrow">PRIVATE ROOM</span><h1>冒險者集合。</h1><p id="lobbySubtitle" class="muted">邀請朋友，設定這一場的玩法。</p></div><div class="invite-box"><span>房間代碼</span><strong id="roomCode">——</strong><button id="copyInvite" class="button secondary small">複製邀請連結 ↗</button></div></div>
         <div class="lobby-columns">
           <div class="lobby-left">
-            <section class="panel roster-panel"><div class="section-top"><h2>對戰席位</h2><span id="seatCount" class="muted">1 / 2</span></div>
-              <div id="seat0" class="seat blue"><span class="avatar">01</span><div><strong id="seat0Name">主辦者</strong><span>HOST · 房主</span></div><span class="seat-state">已加入</span></div>
+            <section class="panel roster-panel"><div class="section-top"><h2>對戰席位</h2><span id="seatCount" class="muted">1 / 4</span></div>
+              <div id="seat0" class="seat blue"><span class="avatar">01</span><div><strong id="seat0Name">主辦者</strong><span>HOST · 房主</span></div><span id="seat0State" class="seat-state">已加入</span></div>
               <div id="seat1" class="seat pink empty"><span class="avatar">02</span><div><strong id="seat1Name">等待冒險者</strong><span>CHALLENGER · 挑戰者</span></div><span id="seat1State" class="seat-state">等待中</span></div>
-              <p class="muted roster-note">共用一張迷宮。各自選路，第一個進入 E3 王冠房間就拿下一分。</p>
+              <div id="seat2" class="seat amber empty"><span class="avatar">03</span><div><strong id="seat2Name">等待冒險者</strong><span>CHALLENGER · 挑戰者</span></div><span id="seat2State" class="seat-state">等待中</span></div>
+              <div id="seat3" class="seat violet empty"><span class="avatar">04</span><div><strong id="seat3Name">等待冒險者</strong><span>CHALLENGER · 挑戰者</span></div><span id="seat3State" class="seat-state">等待中</span></div>
+              <p class="muted roster-note">2–4 人共用一張迷宮。至少兩人即可開局，第一個進入 E3 王冠房間就拿下一分。</p>
             </section>
             <section class="panel controls-panel"><span class="eyebrow">HOW TO PLAY</span><h2>向王冠前進。</h2><div class="control-help"><kbd>W A S D</kbd><span>或方向鍵移動自己</span></div><div class="legend"><span><i class="green"></i>真門，繼續前進</span><span><i class="red"></i>假門，另找出路</span><span><i class="unknown"></i>未知，碰過才揭曉</span></div></section>
           </div>
@@ -50,7 +52,7 @@
               <p id="modeDescription" class="setting-hint">使用真實佈局資料，可依官方機率抽選。</p>
               <div id="officialSettings" class="form-grid"><label class="field">佈局選擇<select id="layoutMode"><option value="random">每回合隨機</option><option value="fixed">指定佈局</option></select></label><label class="field" id="drawModeField">抽籤方式<select id="drawMode"><option value="weighted">依真實機率</option><option value="uniform">均勻隨機</option></select></label><label class="field" id="fixedLayoutField" hidden>佈局編號<input id="fixedLayout" type="number" min="0" max="124" value="0"></label></div>
               <div class="exploration-setting"><label class="field">遊戲玩法<select id="doorMode"><option value="normal">一般探門 · 碰觸揭曉</option><option value="math">數學探門 · 答對才揭曉</option><option value="traffic">紅綠燈 · 紅燈動就回起點</option></select></label><p id="doorDescription" class="setting-hint">碰到未知的門，即可知道真假。</p></div>
-              <label class="toggle-row"><span><strong>黑霧捲軸視角</strong><small id="viewDescription">獨立開關，可搭配任意地圖與探門模式</small></span><input id="viewMode" type="checkbox" role="switch"></label>
+              <label class="toggle-row"><span><strong>捲軸視角</strong><small id="viewDescription">放大與鏡頭跟隨，不遮擋房間或對手</small></span><input id="viewMode" type="checkbox" role="switch"></label>
               <div class="win-setting"><label class="field">自訂勝利分數<div class="target-input"><input id="scoreToWin" type="number" min="1" max="99" step="1" value="3"><span>分</span></div><small>先拿到目標分數的人贏得整場。可輸入 1–99。</small></label><div class="preset-scores" role="group" aria-label="常用勝利分數"><button type="button" data-score="1">1</button><button type="button" data-score="3" class="selected">3</button><button type="button" data-score="5">5</button><button type="button" data-score="7">7</button></div></div>
               <label class="toggle-row"><span><strong>共享探門情報</strong><small id="shareDiscoveryHint">對方發現的真假門，你也看得見</small></span><input id="shareDiscovery" type="checkbox" checked role="switch"></label>
               <label class="toggle-row"><span><strong>回合後揭曉路線</strong><small>結算時可檢視兩條通關路線</small></span><input id="revealAfterRound" type="checkbox" checked role="switch"></label>
@@ -62,19 +64,26 @@
       </section>
       <section id="gameView" class="game-view view" hidden>
         <div class="match-heading"><div><span id="gameModeLabel" class="eyebrow">OFFICIAL MAZE</span><h1 id="roundTitle">第 1 回合</h1></div><span id="matchTarget" class="pill">先得 3 分獲勝</span><button id="gameLobby" class="text-button">房間規則 ↗</button></div>
-        <div class="scoreboard"><div class="score-player blue"><span class="avatar">01</span><div><strong id="p1Name">主辦者</strong><small id="p1Steps">0 步</small></div><b id="p1Score">0</b></div><div class="score-center"><span>RACE TO THE CROWN</span><strong id="clock">0.00</strong><small id="gamePhase">準備開始</small></div><div class="score-player pink"><b id="p2Score">0</b><div><strong id="p2Name">挑戰者</strong><small id="p2Steps">0 步</small></div><span class="avatar">02</span></div></div>
+        <div id="scoreboard" class="scoreboard">
+          <div class="score-center"><span>RACE TO THE CROWN</span><strong id="clock">0.00</strong><small id="gamePhase">準備開始</small></div>
+          <div id="scorePlayer0" class="score-player blue"><span class="avatar">01</span><div><strong id="p1Name">主辦者</strong><small id="p1Steps">0 步</small></div><b id="p1Score">0</b></div>
+          <div id="scorePlayer1" class="score-player pink"><span class="avatar">02</span><div><strong id="p2Name">挑戰者</strong><small id="p2Steps">0 步</small></div><b id="p2Score">0</b></div>
+          <div id="scorePlayer2" class="score-player amber" hidden><span class="avatar">03</span><div><strong id="p3Name">挑戰者</strong><small id="p3Steps">0 步</small></div><b id="p3Score">0</b></div>
+          <div id="scorePlayer3" class="score-player violet" hidden><span class="avatar">04</span><div><strong id="p4Name">挑戰者</strong><small id="p4Steps">0 步</small></div><b id="p4Score">0</b></div>
+        </div>
         <dialog id="mathChallenge" class="math-card panel" hidden aria-labelledby="mathTitle" aria-describedby="mathInstructions"><div><span class="eyebrow">MATH GATE · 數學探門</span><h2 id="mathTitle" tabindex="-1">自己答對，才能繼續。</h2><p id="mathInstructions" class="muted">答錯不限次數；計時與對手仍繼續。即使門已揭曉，也要完成自己的題目。</p></div><strong id="mathQuestion" class="math-question">出題中…</strong><p id="mathDoorStatus" class="math-door-status" role="status">答對後揭曉這扇門的真假。</p><form id="mathForm"><label for="mathAnswer">你的答案</label><div class="math-answer-row"><input id="mathAnswer" type="text" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="整數答案" required pattern="[0-9]+" aria-describedby="mathFeedback"><button id="submitMath" class="button primary" type="submit">確認答案 →</button></div><p id="mathFeedback" class="setting-hint" role="status">請輸入答案。</p></form></dialog>
         <div id="trafficSignal" class="traffic-signal" data-phase="ready" hidden><div class="traffic-lamps" aria-hidden="true"><i class="lamp-red"></i><i class="lamp-yellow"></i><i class="lamp-green"></i></div><div><strong id="trafficLabel" role="status">準備開始</strong><small id="trafficHint">紅燈移動會傳回 A3 起點</small></div><b id="trafficCountdown">—</b></div>
-        <div class="game-columns"><div class="board-column"><div class="arena"><canvas id="board" aria-label="迷宮對戰盤面"></canvas><span id="fogBadge" class="fog-badge" hidden>◉ 黑霧探索 · 鏡頭跟隨</span><div id="countdown" class="countdown" hidden aria-live="assertive"><small>READY?</small><strong id="countdownValue">3</strong></div></div><div class="board-caption"><span id="boardHint">A3 出發 → E3 王冠</span><span id="mapLabel">官方佈局</span></div>
+        <div class="game-columns"><div class="board-column"><div class="arena"><canvas id="board" aria-label="迷宮對戰盤面"></canvas><span id="scrollBadge" class="scroll-badge" hidden>◉ 捲軸視角 · 鏡頭跟隨</span><div id="countdown" class="countdown" hidden aria-live="assertive"><small>READY?</small><strong id="countdownValue">3</strong></div></div><div class="board-caption"><span id="boardHint">A3 出發 → E3 王冠</span></div>
           <div class="dpad" role="group" aria-label="觸控移動"><button data-key="KeyW" class="up" aria-label="上">▲</button><button data-key="KeyA" class="left" aria-label="左">◀</button><button data-key="KeyD" class="right" aria-label="右">▶</button><button data-key="KeyS" class="down" aria-label="下">▼</button></div>
         </div><aside class="panel game-aside"><div id="raceInfo"><span class="eyebrow">THE RACE IS ON</span><h2 id="raceTitle">選你的路。</h2><p id="raceDescription" class="muted">摸清真假門，選好你的路線。找到王冠，拿下這一分。</p><div class="your-seat" id="yourSeat">你是 1P</div><div class="control-help"><kbd>W A S D</kbd><span>方向鍵也可以</span></div><div class="legend vertical"><span><i class="green"></i>真門</span><span><i class="red"></i>假門</span><span><i class="unknown"></i>未知的門</span></div></div>
           <div id="resultInfo" hidden aria-live="polite"><span id="resultKicker" class="eyebrow">ROUND COMPLETE</span><span class="result-crown">♛</span><h2 id="resultTitle">回合獲勝</h2><p id="resultDescription" class="muted"></p><div class="result-stats"><div><span>通關用時</span><strong id="resultTime">0.00 秒</strong></div><div><span>通關步數</span><strong id="resultSteps">0 步</strong></div><div id="routeStat"><span>兩條路線</span><strong id="routeLengths">—</strong></div></div><button id="toggleRoutes" class="button secondary wide">隱藏路線</button><button id="nextRound" class="button primary wide">下一回合 →</button><button id="returnLobby" class="text-button wide">返回房間設定</button><p id="guestWait" class="setting-hint" hidden>等待房主開始下一回合。</p></div>
         </aside></div>
       </section>
     </main>
-    <footer><span>迷途神廟 · 為兩個人的冒險而生</span><a href="https://losttemple.app/" target="_blank" rel="noopener noreferrer">官方佈局資料 / losttemple.app ↗</a></footer>
+    <footer><span>迷途神廟 · 為朋友們的冒險而生</span><a href="https://losttemple.app/" target="_blank" rel="noopener noreferrer">官方佈局資料 / losttemple.app ↗</a></footer>
   </div>
   <div id="notice" class="notice" role="status" hidden></div>
+  <div id="trafficFlash" class="traffic-flash" aria-hidden="true"></div>
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="client.js"></script>
 </body>

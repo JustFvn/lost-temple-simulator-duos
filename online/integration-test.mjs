@@ -24,7 +24,7 @@ async function win(round, expectedScore) {
   host.emit("player:state", { roundId: round.roundId, x: 410, y: 90, steps: 8 });
   assert.equal((await ack(host, "goal:reached", { roundId: round.roundId })).ok, true);
   const [a, b] = await Promise.all(both);
-  assert.deepEqual(a, b); assert.deepEqual(a.scores, [expectedScore, 0]);
+  assert.deepEqual(a, b); assert.deepEqual(a.scores, [expectedScore, 0, 0, 0]);
   assert.equal(a.winner, 0); assert.equal(a.steps, 8); assert(a.elapsedMs >= 0);
   return a;
 }
@@ -41,6 +41,8 @@ try {
   const settings = { ...created.room.settings, layoutMode: "fixed", fixedLayout: 12, scoreToWin: 2, shareDiscovery: false, revealAfterRound: false };
   assert.equal(settings.viewMode, "standard");
   assert.equal((await ack(host, "settings:update", { ...settings, viewMode: "invalid" })).ok, false);
+  assert.equal((await ack(host, "settings:update", { ...settings, viewMode: "fog" })).ok, true, "舊黑霧設定仍能接受並轉為捲軸");
+  assert.equal((await ack(host, "settings:update", settings)).ok, true);
   for (const value of [0, -1, 1.5, 100, "abc"]) assert.equal((await ack(host, "settings:update", { ...settings, scoreToWin: value })).ok, false);
   assert.equal((await ack(host, "settings:update", settings)).ok, true);
   const official = await begin(); assert.equal(official.layoutId, 12);
@@ -57,10 +59,10 @@ try {
   assert.equal((await ack(host, "goal:reached", { roundId: next.roundId })).ok, false, "舊回合位置不可用於新回合");
   const final = await win(next, 2); assert.equal(final.matchWinner, 0, "自訂兩分觸發整場勝利");
   const statePromise = once(guest, "room:state", value => value.settings.mapMode === "procedural");
-  assert.equal((await ack(host, "settings:update", { ...settings, mapMode: "procedural", viewMode: "fog", scoreToWin: 4, shareDiscovery: true, revealAfterRound: true })).ok, true);
-  const state = await statePromise; assert.deepEqual(state.scores, [0, 0]); assert.equal(state.settings.scoreToWin, 4);
+  assert.equal((await ack(host, "settings:update", { ...settings, mapMode: "procedural", viewMode: "scroll", scoreToWin: 4, shareDiscovery: true, revealAfterRound: true })).ok, true);
+  const state = await statePromise; assert.deepEqual(state.scores, [0, 0, 0, 0]); assert.equal(state.settings.scoreToWin, 4);
   const generated = await begin(); assert.equal(generated.layoutId, null);
-  assert.equal(generated.settings.viewMode, "fog", "兩端必須同步黑霧模式");
+  assert.equal(generated.settings.viewMode, "scroll", "兩端必須同步捲軸模式");
   const generatedPaths = allPaths(new Set(generated.openDoors));
   assert.equal(generatedPaths.length, 2);
   assert.equal(generated.openDoors.length, generatedPaths.reduce((sum, path) => sum + path.length - 1, 0), "伺服器生成地圖不可包含死路支線");
@@ -69,7 +71,7 @@ try {
   const restart = await begin(); assert.equal(restart.roundNumber, 2);
   const departed = once(host, "room:state", value => value.players.length === 1);
   assert.equal((await ack(guest, "room:leave")).ok, true);
-  const afterLeave = await departed; assert.equal(afterLeave.status, "lobby"); assert.deepEqual(afterLeave.scores, [0, 0]);
+  const afterLeave = await departed; assert.equal(afterLeave.status, "lobby"); assert.deepEqual(afterLeave.scores, [0, 0, 0, 0]);
   assert.equal((await ack(guest, "room:join", { code: created.room.code, name: "重新加入" })).ok, true);
   const closed = once(guest, "room:closed");
   await ack(host, "room:leave"); await closed;
