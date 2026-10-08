@@ -104,7 +104,7 @@ function paintBoard(ctx, px, st) {
     }
   }
 
-  drawGoal(ctx);
+  drawGoal(ctx, st.goalLocked);
 
   for (let i = 0; i < DOORS.length; i++) {        // 門格
     const g = GAPS[i], state = st.doors[i], ghost = st.ghost ? st.ghost[i] : 0;
@@ -127,6 +127,13 @@ function paintBoard(ctx, px, st) {
     ctx.restore();
   }
 
+  if (st.coveredDoors) {
+    // Display only the player's completed segments, never unexplored answers.
+    const segments = [...st.coveredDoors].map(id => {
+      const [r, c, rr, cc] = DOORS[id]; return [r * 5 + c, rr * 5 + cc];
+    });
+    drawPaths(ctx, segments, true);
+  }
   if (st.paths) drawPaths(ctx, st.paths);
   if (st.players) st.players.forEach((p, i) => { if (p) drawPlayer(ctx, p, p.slot ?? i); });
   else if (st.player) drawPlayer(ctx, st.player, 0);
@@ -135,18 +142,22 @@ function paintBoard(ctx, px, st) {
   ctx.restore();
 }
 
-function drawGoal(ctx) {
+function drawGoal(ctx, locked = false) {
   const x = pos(GOAL.c), y = pos(GOAL.r), cx = x + ROOM / 2, cy = y + ROOM / 2;
 
   ctx.save();                                     // 王冠：三角齒 + 底座
   ctx.translate(cx, cy);
   ctx.scale(SCALE, SCALE);
-  ctx.fillStyle = C.gold;
+  ctx.fillStyle = locked ? "#8B9992" : C.gold;
   ctx.beginPath();
   ctx.moveTo(-17, 8); ctx.lineTo(-17, -6); ctx.lineTo(-8, 2); ctx.lineTo(0, -10);
   ctx.lineTo(8, 2); ctx.lineTo(17, -6); ctx.lineTo(17, 8);
   ctx.closePath(); ctx.fill();
   ctx.fillRect(-17, 11, 34, 4);
+  if (locked) {
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("未解鎖", 0, 30);
+  }
   ctx.restore();
 }
 
@@ -163,7 +174,7 @@ function drawStartMark(ctx) {
  * 所有路線畫成同一張虛線網：先把每條路線拆成房間之間的線段並去重，
  * 重疊的路段只畫一次，兩條路線在分岔前後自然接成一條線。
  */
-function drawPaths(ctx, paths) {
+function drawPaths(ctx, paths, covered = false) {
   const seen = new Set(), segs = [];
   for (const p of paths)
     for (let k = 1; k < p.length; k++) {
@@ -184,8 +195,8 @@ function drawPaths(ctx, paths) {
   ctx.setLineDash([]);
   ctx.stroke();
   ctx.lineWidth = 3.5 * SCALE;
-  ctx.strokeStyle = C.gold;                       // 路線顏色跟著棋盤主題的金色走
-  ctx.setLineDash([11 * SCALE, 8 * SCALE]);
+  ctx.strokeStyle = covered ? "#9AE6CE" : C.gold;
+  ctx.setLineDash(covered ? [] : [11 * SCALE, 8 * SCALE]);
   ctx.stroke();
   ctx.restore();
 }

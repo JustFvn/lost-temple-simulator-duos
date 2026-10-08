@@ -10,6 +10,7 @@ import { generateMaze } from "./maze.js";
 import { generateMathProblem, isCorrectAnswer } from "./math-challenge.js";
 import { createTrafficSchedule, trafficState, TRAFFIC_GRACE_MS } from "./public/traffic.js";
 import { MAX_PLAYERS, emptyScores, spawnPosition, availableSlot } from "./public/players.js";
+import { coveragePlan, createCoverage, advanceCoverage, coverageProgress } from "./public/route-coverage.js";
 
 const ROOT = fileURLToPath(new URL("./public/", import.meta.url));
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
@@ -50,7 +51,8 @@ function cleanSettings(value = {}) {
   const viewMode = value.viewMode === "fog" ? "scroll" : value.viewMode ?? "standard";
   if (!["standard", "scroll"].includes(viewMode)) throw new Error("無效的鏡頭模式。");
   const doorMode = value.doorMode ?? "normal";
-  if (!["normal", "math", "traffic"].includes(doorMode)) throw new Error("無效的遊戲玩法。");
+  if (!["normal", "math", "traffic", "coverage"].includes(doorMode)) throw new Error("無效的遊戲玩法。");
+  if (doorMode === "coverage" && value.mapMode !== "official") throw new Error("全路線探索只能使用官方佈局。");
   return { mapMode: value.mapMode, viewMode, doorMode, drawMode: value.drawMode === "uniform" ? "uniform" : "weighted", layoutMode: value.layoutMode === "fixed" ? "fixed" : "random", fixedLayout, scoreToWin, shareDiscovery: value.shareDiscovery !== false, revealAfterRound: value.revealAfterRound !== false };
 }
 function publicRoom(room) {
@@ -132,8 +134,9 @@ io.on("connection", socket => {
     room.open = new Set(room.openDoors); room.roundId = randomUUID(); room.roundNumber++;
     room.status = "playing"; room.startsAt = Date.now() + 3500;
     room.traffic = room.settings.doorMode === "traffic" ? createTrafficSchedule() : null;
-    for (const player of room.players.values()) { Object.assign(player, spawnPosition(player.slot)); player.steps = 0; player.revision = 0; player.solvedDoors = new Set(); player.challenge = null; }
-    io.to(room.code).emit("round:start", { roundId: room.roundId, roundNumber: room.roundNumber, layoutId: room.layoutId, openDoors: room.openDoors, settings: room.settings, scores: room.scores, startsAt: room.startsAt, serverNow: Date.now(), countdownMs: 3500, traffic: room.traffic, players: [...room.players.values()].map(({ slot, x, y, steps, revision }) => ({ slot, x, y, steps, revision })) });
+    room.coverage = room.settings.doorMode === "coverage" ? coveragePlan(room.open) : null;
+    for (const player of room.players.values()) { Object.assign(player, spawnPosition(player.slot)); player.steps = 0; player.revision = 0; player.solvedDoors = new Set(); player.challenge = null; player.coverage = createCoverage(); }
+    io.to(room.code).emit("round:start", { roundId: room.roundId, roundNumber: room.roundNumber, layoutId: room.layoutId, openDoors: room.openDoors, settings: room.settings, scores: room.scores, startsAt: room.startsAt, serverNow: Date.now(), countdownMs: 3500, traffic: room.traffic, coverageTotal: room.coverage?.required.size ?? 0, players: [...room.players.values()].map(({ slot, x, y, steps, revision }) => ({ slot, x, y, steps, revision })) });
     broadcast(room); reply(ack, { ok: true });
   });
   socket.on("player:state", data => {
@@ -153,6 +156,13 @@ io.on("connection", socket => {
         io.to(room.code).emit("player:reset", { ...correction(), penalized: true });
         return;
       }
+    }
+    if (room.coverage) {
+      const correction = () => ({ roundId: room.roundId, slot: player.slot, x: player.x, y: player.y, steps: player.steps, revision: player.revision, room: player.coverage.room });
+      if (data.revision !== player.revision) { socket.emit("player:reset", correction()); return; }
+      const result = advanceCoverage(player.coverage, room.coverage, player, { x, y });
+      if (!result.valid) { player.revision++; socket.emit("player:reset", correction()); return; }
+      if (result.changed) socket.emit("route:progress", { roundId: room.roundId, ...coverageProgress(player.coverage, room.coverage) });
     }
     player.x = x; player.y = y; player.steps = steps;
     socket.to(room.code).emit("player:state", { roundId: room.roundId, slot: player.slot, x, y, steps });
@@ -192,7 +202,9 @@ io.on("connection", socket => {
     if (!player) return fail(ack, "回合尚未開始或已結束。");
     if (room.traffic && data.revision !== player.revision) return fail(ack, "位置已重置，請重新抵達終點。");
     if (player.challenge) return fail(ack, "請先答對目前的題目。");
+    if (room.coverage && data.revision !== player.revision) return fail(ack, "位置已校正，請重新抵達終點。");
     if (player.x < 340 || player.x > 480 || player.y < 20 || player.y > 160) return fail(ack, "尚未抵達 E3 終點。");
+    if (room.coverage && !coverageProgress(player.coverage, room.coverage).ready) return fail(ack, `王冠尚未解鎖：還需要親自走過 ${room.coverage.required.size - player.coverage.doors.size} 個路段。`);
     room.status = "ended"; room.scores[player.slot]++;
     io.to(room.code).emit("round:end", { roundId: room.roundId, winner: player.slot, scores: room.scores, matchWinner: room.scores[player.slot] >= room.settings.scoreToWin ? player.slot : -1, elapsedMs: Date.now() - room.startsAt, steps: player.steps, players: [...room.players.values()].map(({ slot, x, y, steps }) => ({ slot, x, y, steps })), routeLengths: room.settings.revealAfterRound ? allPaths(room.open).map(path => path.length - 1) : null });
     broadcast(room); reply(ack, { ok: true });

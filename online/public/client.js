@@ -113,6 +113,15 @@ function applySettings(settings) {
   syncSettingsDisplay();
 }
 function syncSettingsDisplay() {
+  const coverage = $("#doorMode").value === "coverage";
+  // Choosing this mode switches to official maps; other modes unlock the choice.
+  $("#proceduralMode").disabled = coverage;
+  if (coverage) {
+    for (const button of document.querySelectorAll("[data-mode]")) {
+      const selected = button.dataset.mode === "official";
+      button.classList.toggle("selected", selected); button.setAttribute("aria-pressed", String(selected));
+    }
+  }
   const generated = $("#proceduralMode").classList.contains("selected");
   $("#officialSettings").hidden = generated;
   $("#modeDescription").textContent = generated ? "不抽選官方關卡。程式每回合生成新迷宮，沒有死路，兩條分岔都能抵達 E3。" : "使用真實佈局資料，可依官方機率抽選。";
@@ -120,6 +129,10 @@ function syncSettingsDisplay() {
   $("#viewDescription").textContent = scroll ? "放大盤面、鏡頭跟隨自己；沒有黑霧或牆後遮擋" : "獨立開關，可搭配任意地圖與玩法";
   $("#doorDescription").textContent = math ? "每人撞門都要回答簡單加減乘除題；即使真假已共享，仍須自己答對才能解除限制。" : "碰到未知的門，即可知道真假。";
   if (traffic) $("#doorDescription").textContent = "雙方同步紅綠燈：綠燈前進、黃燈準備停，紅燈移動就傳回 A3 起點。探門記錄保留。";
+  if (coverage) {
+    $("#modeDescription").textContent = "全路線探索限定官方佈局；仍可隨機抽選或指定官方關卡。";
+    $("#doorDescription").textContent = "親自走過兩條官方通關路線的所有路段，才能拿 E3 王冠。重疊路段只算一次，對手探門不會增加你的進度。";
+  }
   $("#shareDiscoveryHint").textContent = math ? "答對後共享開關資訊，但每人仍要自己答對才能通過" : "對方發現的真假門，你也看得見";
   const fixed = $("#layoutMode").value === "fixed";
   $("#fixedLayoutField").hidden = !fixed; $("#drawModeField").hidden = fixed;
@@ -144,6 +157,7 @@ function queueSettings() {
 }
 $("#hostSettings").addEventListener("change", queueSettings);
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => {
+  if (button.dataset.mode === "procedural" && $("#doorMode").value === "coverage") return;
   for (const option of document.querySelectorAll("[data-mode]")) {
     const selected = option === button; option.classList.toggle("selected", selected); option.setAttribute("aria-pressed", String(selected));
   }
@@ -300,6 +314,8 @@ socket.on("round:start", data => {
   for (const player of data.players) run.players[player.slot] = { ...player, room: START_I };
   run.visited[START_I] = 1;
   run.paths = allPaths(run.open);
+  run.coveredDoors = new Set(); run.coverageReady = false;
+  updateCoverageDisplay();
   run.unlocked = new Set(); run.solved = new Set(); run.quiz = null;
   if (data.settings.doorMode === "math") run.walls = buildWalls(run.unlocked);
   run.camera = cameraTarget(run.players[slot]);
@@ -311,6 +327,11 @@ socket.on("round:start", data => {
     $("#gameModeLabel").textContent = scroll ? "MATH GATES · SCROLLING" : "MATH GATES";
     $("#raceTitle").textContent = "答對，才揭曉。";
     $("#raceDescription").textContent = "撞門先答加減乘除題，答錯可一直重試。即使已共享真假資訊，仍要自己答對才能通過；計時與對手不會暫停。";
+  }
+  if (data.settings.doorMode === "coverage") {
+    $("#gameModeLabel").textContent = scroll ? "FULL EXPLORATION · SCROLLING" : "FULL EXPLORATION · OFFICIAL";
+    $("#raceTitle").textContent = "走遍兩條路。";
+    $("#raceDescription").textContent = "親自走過兩條官方通關路線的每個路段，王冠才會解鎖。可來回探索，重複路段只算一次；對手的足跡不會計入你的進度。";
   }
   $("#trafficSignal").hidden = !data.traffic;
   if (data.traffic) {
@@ -334,16 +355,33 @@ socket.on("player:state", data => {
   if (run.settings.shareDiscovery) markRoom(run.players[data.slot], false);
 });
 socket.on("player:reset", data => {
-  if (!run?.traffic || run.done || data.roundId !== run.roundId) return;
+  if (!run || (!run.traffic && run.settings.doorMode !== "coverage") || run.done || data.roundId !== run.roundId) return;
   const player = run.players[data.slot];
   if (!player || data.revision <= player.revision) return;
   const changed = data.revision > player.revision;
-  Object.assign(player, { x: data.x, y: data.y, room: START_I, steps: data.steps, revision: data.revision });
+  Object.assign(player, { x: data.x, y: data.y, room: data.room ?? START_I, steps: data.steps, revision: data.revision });
   if (data.slot === slot) {
     for (const key of held) blockedControls.add(key);
     held.clear(); run.goalPending = false; run.camera = cameraTarget(player);
-    if (changed) notify("紅燈移動！已傳回 A3 起點，放開方向鍵後再出發。");
+    if (changed) notify(run.traffic ? "紅燈移動！已傳回 A3 起點，放開方向鍵後再出發。" : "位置已校正，請沿著真門行走，放開方向鍵後再出發。");
   } else if (changed) notify(`${data.slot + 1}P 紅燈移動，被傳回起點！`);
+});
+function updateCoverageDisplay() {
+  const enabled = run?.settings.doorMode === "coverage";
+  $("#coveragePanel").hidden = !enabled;
+  if (!enabled) return;
+  const completed = run.coveredDoors.size, total = run.coverageTotal;
+  $("#coverageCount").textContent = `${completed} / ${total} 路段`;
+  $("#coverageProgress").max = Math.max(1, total); $("#coverageProgress").value = completed;
+  $("#coverageStatus").textContent = run.coverageReady ? "王冠已解鎖 · 前往 E3！" : "王冠鎖定 · 兩條路線都要親自走過";
+  $("#coveragePanel").classList.toggle("complete", run.coverageReady);
+}
+socket.on("route:progress", data => {
+  if (!run || run.done || run.settings.doorMode !== "coverage" || data.roundId !== run.roundId) return;
+  const wasReady = run.coverageReady;
+  run.coveredDoors = new Set(data.doorIds); run.coverageReady = data.ready;
+  updateCoverageDisplay();
+  if (!wasReady && data.ready) notify("所有路段都走過了！王冠已解鎖，前往 E3 拿下這一分。");
 });
 socket.on("door:discover", data => {
   if (!run || run.done || data.roundId !== run.roundId) return;
@@ -419,10 +457,19 @@ function markRoom(player, local) {
   if (player.x > pos(c) + ROOM || player.y > pos(r) + ROOM) return;
   const index = r * 5 + c; run.visited[index] = 1;
   if (!local) return;
-  if (index !== player.room) { player.room = index; player.steps++; }
+  const entered = index !== player.room;
+  if (entered) { player.room = index; player.steps++; }
+  if (run.settings.doorMode === "coverage") {
+    if (entered) sendPosition();
+    if (!run.coverageReady) {
+      if (entered && index === GOAL_I) notify("王冠還沒解鎖！繼續探索另一條路線，走完所有路段再來。");
+      return;
+    }
+  }
   if (index === GOAL_I && !run.goalPending) {
+    const game = run;
     run.goalPending = true; sendPosition();
-    request("goal:reached", { roundId: run.roundId, revision: player.revision }).catch(() => { if (run && !run.done) run.goalPending = false; });
+    request("goal:reached", { roundId: run.roundId, revision: player.revision }).catch(() => { if (run === game && !game.done) game.goalPending = false; });
   }
 }
 function step(dt) {
@@ -491,7 +538,7 @@ function frame(now) {
       $("#scrollBadge").hidden = !scroll;
       $("#boardHint").textContent = scroll ? `${String.fromCharCode(69 - Math.floor(localPlayer.room / 5))}${localPlayer.room % 5 + 1} · 王冠位於 E3 ↑` : "A3 出發 → E3 王冠";
       const doors = run.showRoutes ? Int8Array.from(DOORS, (_, i) => run.open.has(i) ? 1 : 2) : run.doors;
-      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, paths: run.showRoutes ? run.paths : null, flash: run.flash, camera: scroll ? run.camera : null });
+      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, paths: run.showRoutes ? run.paths : null, coveredDoors: run.settings.doorMode === "coverage" && !run.showRoutes ? run.coveredDoors : null, goalLocked: run.settings.doorMode === "coverage" && !run.coverageReady && !run.done, flash: run.flash, camera: scroll ? run.camera : null });
     }
   }
   requestAnimationFrame(frame);
