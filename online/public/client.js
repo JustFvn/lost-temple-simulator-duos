@@ -4,26 +4,45 @@ import { paintBoard } from "./renderer.js";
 import { cameraTarget, followCamera } from "./vision.js";
 import { trafficState } from "./traffic.js";
 import { MAX_PLAYERS, PLAYER_STYLES } from "./players.js";
+import { createDpad } from "./touch-controls.js";
+import { rotationState, screenToWorld } from "./rotation.js";
 
 const $ = selector => document.querySelector(selector);
 const socket = window.io();
 const canvas = $("#board"), ctx = canvas.getContext("2d");
 canvas.tabIndex = 0;
 const held = new Set();
+const keyboardHeld = new Set(), touchHeld = new Set();
+let dpadControls = null;
 const blockedControls = new Set();
-const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const motionPreference = matchMedia("(prefers-reduced-motion: reduce)");
+let reducedMotion = motionPreference.matches;
+motionPreference.addEventListener("change", event => {
+  reducedMotion = event.matches;
+  if (run?.rotation) $("#rotationHint").textContent = reducedMotion ? "減少動態：每 4 秒轉向 90° · 按螢幕方向移動" : "每 4 秒轉 90° · 順時針一圈 16 秒 · 按螢幕方向移動";
+});
 const CONTROL = { KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 1], KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0] };
 let room = null, slot = -1, run = null, currentView = "home", serverOffset = 0;
 let noticeTimer, settingsTimer, entryBusy = false, starting = false, lastSent = 0;
 const isHost = () => room?.hostId === socket.id;
 const fmt = ms => (Math.max(0, ms) / 1000).toFixed(2);
 
+function syncHeld() {
+  held.clear();
+  for (const key of [...keyboardHeld, ...touchHeld]) if (!blockedControls.has(key)) held.add(key);
+}
+function clearControls(blockTouches = false) {
+  keyboardHeld.clear(); touchHeld.clear(); held.clear();
+  if (blockTouches) dpadControls?.blockUntilRelease();
+  else dpadControls?.clear();
+}
+
 function notify(message) {
   $("#notice").textContent = message; $("#notice").hidden = false;
   clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $("#notice").hidden = true; }, 4500);
 }
 function showView(view) {
-  currentView = view; held.clear();
+  currentView = view; clearControls();
   for (const name of ["home", "lobby", "game"]) $(`#${name}View`).hidden = name !== view;
   if (view === "game") { fitCanvas(); if (run?.traffic) run.trafficPhase = null; }
   else clearTrafficFlash();
@@ -53,7 +72,7 @@ socket.on("connect", () => {
 });
 function clearRoom() {
   clearQuiz();
-  room = null; run = null; slot = -1; held.clear(); clearTimeout(settingsTimer);
+  room = null; run = null; slot = -1; clearControls(); clearTimeout(settingsTimer);
   blockedControls.clear(); $("#trafficSignal").hidden = true; clearTrafficFlash();
   $("#roomBadge").hidden = $("#leaveRoom").hidden = true;
   history.replaceState(null, "", location.pathname); showView("home");
@@ -114,9 +133,10 @@ function applySettings(settings) {
 }
 function syncSettingsDisplay() {
   const coverage = $("#doorMode").value === "coverage";
+  const reverse = $("#doorMode").value === "reverse", officialOnly = coverage || reverse;
   // Choosing this mode switches to official maps; other modes unlock the choice.
-  $("#proceduralMode").disabled = coverage;
-  if (coverage) {
+  $("#proceduralMode").disabled = officialOnly;
+  if (officialOnly) {
     for (const button of document.querySelectorAll("[data-mode]")) {
       const selected = button.dataset.mode === "official";
       button.classList.toggle("selected", selected); button.setAttribute("aria-pressed", String(selected));
@@ -129,9 +149,14 @@ function syncSettingsDisplay() {
   $("#viewDescription").textContent = scroll ? "放大盤面、鏡頭跟隨自己；沒有黑霧或牆後遮擋" : "獨立開關，可搭配任意地圖與玩法";
   $("#doorDescription").textContent = math ? "每人撞門都要回答簡單加減乘除題；即使真假已共享，仍須自己答對才能解除限制。" : "碰到未知的門，即可知道真假。";
   if (traffic) $("#doorDescription").textContent = "雙方同步紅綠燈：綠燈前進、黃燈準備停，紅燈移動就傳回 A3 起點。探門記錄保留。";
+  if ($("#doorMode").value === "rotate") $("#doorDescription").textContent = "整張 5×5 迷宮順時針旋轉，每 4 秒轉 90°，一圈 16 秒。鍵盤與手機方向鍵以螢幕方向為準；可搭配官方／生成迷宮與捲軸視角。容易暈眩者請選其他玩法。";
   if (coverage) {
     $("#modeDescription").textContent = "全路線探索限定官方佈局；仍可隨機抽選或指定官方關卡。";
     $("#doorDescription").textContent = "親自走過兩條官方通關路線的所有路段，才能拿 E3 王冠。重疊路段只算一次，對手探門不會增加你的進度。";
+  }
+  if (reverse) {
+    $("#modeDescription").textContent = "逆向神廟限定官方佈局；可隨機抽選或指定官方關卡。";
+    $("#doorDescription").textContent = "從原本 E3 終點出發，跑回 A3 起點拿王冠。棋盤固定翻轉 180°，E3 在畫面下方、A3 在上方；不會持續旋轉，方向鍵以螢幕為準。";
   }
   $("#shareDiscoveryHint").textContent = math ? "答對後共享開關資訊，但每人仍要自己答對才能通過" : "對方發現的真假門，你也看得見";
   const fixed = $("#layoutMode").value === "fixed";
@@ -157,7 +182,7 @@ function queueSettings() {
 }
 $("#hostSettings").addEventListener("change", queueSettings);
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => {
-  if (button.dataset.mode === "procedural" && $("#doorMode").value === "coverage") return;
+  if (button.dataset.mode === "procedural" && ["coverage", "reverse"].includes($("#doorMode").value)) return;
   for (const option of document.querySelectorAll("[data-mode]")) {
     const selected = option === button; option.classList.toggle("selected", selected); option.setAttribute("aria-pressed", String(selected));
   }
@@ -170,6 +195,7 @@ function updateRoom(data) {
   $("#roomBadge").hidden = $("#leaveRoom").hidden = false;
   $("#roomBadge").textContent = room.code; $("#roomCode").textContent = room.code;
   $("#seatCount").textContent = `${room.players.length} / ${MAX_PLAYERS}`;
+  $(".roster-note").textContent = room.settings.doorMode === "reverse" ? "2–4 人共用官方迷宮，從 E3 出發。第一個跑回 A3 王冠房間的人拿下一分。" : "2–4 人共用一張迷宮。至少兩人即可開局，第一個符合玩法條件並進入 E3 王冠房間的人拿下一分。";
   $("#scoreboard").style.setProperty("--active-players", Math.max(2, room.players.length));
   for (let i = 0; i < MAX_PLAYERS; i++) {
     const player = room.players.find(p => p.slot === i);
@@ -232,7 +258,7 @@ function updateMathDoorStatus(game, doorId) {
 }
 function clearQuiz() {
   if (run) run.quiz = null;
-  held.clear();
+  clearControls();
   if (mathDialog.open) mathDialog.close();
   mathDialog.hidden = true; $("#mathAnswer").value = "";
 }
@@ -250,7 +276,7 @@ async function beginQuiz(doorId) {
   const game = run;
   if (!game || game.done) return;
   const loading = { doorId, loading: true };
-  game.quiz = loading; held.clear(); sendPosition();
+  game.quiz = loading; clearControls(); sendPosition();
   $("#mathQuestion").textContent = "出題中…";
   $("#mathFeedback").textContent = "正在取得題目，計時仍繼續。";
   $("#mathFeedback").classList.remove("incorrect");
@@ -307,18 +333,27 @@ $("#mathForm").addEventListener("submit", async event => {
 socket.on("round:start", data => {
   if (!room) return;
   clearQuiz();
-  held.clear(); blockedControls.clear(); clearTrafficFlash(); lastSent = 0;
+  clearControls(); blockedControls.clear(); clearTrafficFlash(); lastSent = 0;
   // Convert the shared server start time to a monotonic local deadline.
   const wait = Math.max(0, data.startsAt - (Date.now() + serverOffset));
   run = { ...data, open: new Set(data.openDoors), walls: buildWalls(new Set(data.openDoors)), doors: new Int8Array(DOORS.length), visited: new Uint8Array(25), flash: new Map(), players: Array(MAX_PLAYERS).fill(null), started: performance.now() + wait, elapsed: 0, done: false, goalPending: false, showRoutes: false };
-  for (const player of data.players) run.players[player.slot] = { ...player, room: START_I };
-  run.visited[START_I] = 1;
+  run.reverse = data.settings.doorMode === "reverse";
+  run.startI = data.startI ?? (run.reverse ? GOAL_I : START_I);
+  run.goalI = data.goalI ?? (run.reverse ? START_I : GOAL_I);
+  for (const player of data.players) run.players[player.slot] = { ...player, room: run.startI };
+  run.visited[run.startI] = 1;
   run.paths = allPaths(run.open);
+  if (run.reverse) run.paths = run.paths.map(path => [...path].reverse());
   run.coveredDoors = new Set(); run.coverageReady = false;
   updateCoverageDisplay();
   run.unlocked = new Set(); run.solved = new Set(); run.quiz = null;
   if (data.settings.doorMode === "math") run.walls = buildWalls(run.unlocked);
   run.camera = cameraTarget(run.players[slot]);
+  run.rotationAngle = run.reverse ? Math.PI : data.rotation ? 0 : undefined;
+  $("#rotationSignal").hidden = !(data.rotation || run.reverse);
+  $("#rotationTitle").textContent = run.reverse ? "逆向神廟 · 固定 180°" : "旋轉神廟 · 順時針";
+  $(".rotation-icon").textContent = run.reverse ? "⇵" : "↻";
+  $("#rotationHint").textContent = run.reverse ? "官方限定 · E3 出發 → A3 王冠 · 按螢幕方向移動" : reducedMotion ? "減少動態：每 4 秒轉向 90° · 按螢幕方向移動" : "每 4 秒轉 90° · 順時針一圈 16 秒 · 按螢幕方向移動";
   const scroll = data.settings.viewMode === "scroll" || data.settings.viewMode === "fog";
   $("#gameModeLabel").textContent = scroll ? "SCROLLING CAMERA" : data.settings.mapMode === "procedural" ? "GENERATED MAZE" : "OFFICIAL MAZE";
   $("#raceTitle").textContent = scroll ? "跟著鏡頭前進。" : "選你的路。";
@@ -333,13 +368,23 @@ socket.on("round:start", data => {
     $("#raceTitle").textContent = "走遍兩條路。";
     $("#raceDescription").textContent = "親自走過兩條官方通關路線的每個路段，王冠才會解鎖。可來回探索，重複路段只算一次；對手的足跡不會計入你的進度。";
   }
+  if (data.rotation) {
+    $("#gameModeLabel").textContent = scroll ? "ROTATING TEMPLE · SCROLLING" : "ROTATING TEMPLE";
+    $("#raceTitle").textContent = "神廟在轉，別迷失方向。";
+    $("#raceDescription").textContent = "整張棋盤、門與王冠一起旋轉。按右仍往螢幕右側走，手機滑動方向鍵也一樣；真假門照常共享，第一個抵達 E3 王冠的人得分。";
+  }
+  if (run.reverse) {
+    $("#gameModeLabel").textContent = scroll ? "REVERSE TEMPLE · SCROLLING" : "REVERSE TEMPLE · OFFICIAL";
+    $("#raceTitle").textContent = "從終點，跑回起點。";
+    $("#raceDescription").textContent = "沿官方路線逆向探索，從畫面下方的 E3 出發，跑回上方的 A3 拿王冠。整張棋盤固定翻轉 180°，不會繼續轉動；探門情報仍可共享。";
+  }
   $("#trafficSignal").hidden = !data.traffic;
   if (data.traffic) {
     $("#gameModeLabel").textContent = scroll ? "RED LIGHT · SCROLLING" : "RED LIGHT / GREEN LIGHT";
     $("#raceTitle").textContent = "紅燈停，綠燈走。";
     $("#raceDescription").textContent = "所有玩家共用燈號，黃燈預告後就要停下。紅燈時按移動鍵也算違規，會被傳回起點；已探過的門保留。";
   }
-  canvas.setAttribute("aria-label", scroll ? "捲軸迷宮，放大鏡頭跟隨你的角色，沒有黑霧遮擋" : "迷宮對戰盤面");
+  canvas.setAttribute("aria-label", run.reverse ? "逆向神廟，棋盤固定旋轉180度，從下方 E3 出發，回到上方 A3 拿王冠" : data.rotation ? "旋轉神廟，5×5 棋盤順時針旋轉，方向鍵以螢幕方向為準" : scroll ? "捲軸迷宮，放大鏡頭跟隨你的角色，沒有黑霧遮擋" : "迷宮對戰盤面");
   $("#roundTitle").textContent = `第 ${data.roundNumber} 回合`;
   $("#raceInfo").hidden = false; $("#resultInfo").hidden = true;
   $("#countdown").hidden = false; $("#countdownValue").textContent = "3";
@@ -359,10 +404,10 @@ socket.on("player:reset", data => {
   const player = run.players[data.slot];
   if (!player || data.revision <= player.revision) return;
   const changed = data.revision > player.revision;
-  Object.assign(player, { x: data.x, y: data.y, room: data.room ?? START_I, steps: data.steps, revision: data.revision });
+  Object.assign(player, { x: data.x, y: data.y, room: data.room ?? run.startI, steps: data.steps, revision: data.revision });
   if (data.slot === slot) {
-    for (const key of held) blockedControls.add(key);
-    held.clear(); run.goalPending = false; run.camera = cameraTarget(player);
+    for (const key of keyboardHeld) blockedControls.add(key);
+    clearControls(true); run.goalPending = false; run.camera = cameraTarget(player);
     if (changed) notify(run.traffic ? "紅燈移動！已傳回 A3 起點，放開方向鍵後再出發。" : "位置已校正，請沿著真門行走，放開方向鍵後再出發。");
   } else if (changed) notify(`${data.slot + 1}P 紅燈移動，被傳回起點！`);
 });
@@ -400,7 +445,8 @@ socket.on("round:end", data => {
   if (!run || data.roundId !== run.roundId) return;
   clearQuiz();
   clearTrafficFlash();
-  run.done = true; run.elapsed = data.elapsedMs; held.clear();
+  run.done = true; run.elapsed = data.elapsedMs; clearControls();
+  run.rotationAngle = run.reverse ? Math.PI : undefined; $("#rotationSignal").hidden = !run.reverse;
   for (const player of data.players) Object.assign(run.players[player.slot], player);
   run.showRoutes = run.settings.revealAfterRound;
   $("#countdown").hidden = true; $("#raceInfo").hidden = true; $("#resultInfo").hidden = false;
@@ -409,7 +455,7 @@ socket.on("round:end", data => {
   $("#resultKicker").textContent = matchDone ? "MATCH COMPLETE" : "ROUND COMPLETE";
   $("#resultTitle").textContent = matchDone ? won ? "你贏得整場！" : "對手贏得整場" : won ? "這一分，你的。" : "對手先到一步。";
   const scores = room.players.slice().sort((a, b) => a.slot - b.slot).map(player => `${player.slot + 1}P ${data.scores[player.slot]}`).join(" / ");
-  $("#resultDescription").textContent = `${name} 先抵達王冠，${matchDone ? `率先拿下 ${run.settings.scoreToWin} 分。` : `目前比分 ${scores}。`}`;
+  $("#resultDescription").textContent = `${name} ${run.reverse ? "先跑回 A3 並取得王冠" : "先抵達王冠"}，${matchDone ? `率先拿下 ${run.settings.scoreToWin} 分。` : `目前比分 ${scores}。`}`;
   $("#resultTime").textContent = `${fmt(data.elapsedMs)} 秒`; $("#resultSteps").textContent = `${data.steps} 步`;
   $("#routeStat").hidden = $("#toggleRoutes").hidden = !run.settings.revealAfterRound;
   $("#routeLengths").textContent = `${data.routeLengths?.join(" / ") || "—"} 步`;
@@ -422,15 +468,15 @@ socket.on("round:end", data => {
 
 addEventListener("keydown", event => {
   if (currentView !== "game" || run?.quiz || !CONTROL[event.code] || event.target.closest("input, select, textarea") || event.ctrlKey || event.metaKey || event.altKey) return;
-  event.preventDefault(); if (!blockedControls.has(event.code)) held.add(event.code);
+  event.preventDefault(); keyboardHeld.add(event.code); syncHeld();
 });
-addEventListener("keyup", event => { held.delete(event.code); blockedControls.delete(event.code); });
-addEventListener("blur", () => { held.clear(); blockedControls.clear(); });
-document.addEventListener("visibilitychange", () => { if (document.hidden) held.clear(); });
-for (const button of document.querySelectorAll("[data-key]")) {
-  button.addEventListener("pointerdown", event => { event.preventDefault(); if (currentView !== "game" || run?.quiz) return; button.setPointerCapture(event.pointerId); if (!blockedControls.has(button.dataset.key)) held.add(button.dataset.key); });
-  for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(name, () => { held.delete(button.dataset.key); blockedControls.delete(button.dataset.key); });
-}
+addEventListener("keyup", event => { keyboardHeld.delete(event.code); blockedControls.delete(event.code); syncHeld(); });
+addEventListener("blur", () => { clearControls(); blockedControls.clear(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) clearControls(); });
+dpadControls = createDpad($(".dpad"), {
+  canPress: () => currentView === "game" && run && !run.done && !run.quiz,
+  onChange: keys => { touchHeld.clear(); for (const key of keys) touchHeld.add(key); syncHeld(); },
+});
 function collide(player) {
   for (const wall of run.walls) {
     const cx = Math.max(wall.x, Math.min(player.x, wall.x + wall.w));
@@ -462,11 +508,11 @@ function markRoom(player, local) {
   if (run.settings.doorMode === "coverage") {
     if (entered) sendPosition();
     if (!run.coverageReady) {
-      if (entered && index === GOAL_I) notify("王冠還沒解鎖！繼續探索另一條路線，走完所有路段再來。");
+      if (entered && index === run.goalI) notify("王冠還沒解鎖！繼續探索另一條路線，走完所有路段再來。");
       return;
     }
   }
-  if (index === GOAL_I && !run.goalPending) {
+  if (index === run.goalI && !run.goalPending) {
     const game = run;
     run.goalPending = true; sendPosition();
     request("goal:reached", { roundId: run.roundId, revision: player.revision }).catch(() => { if (run === game && !game.done) game.goalPending = false; });
@@ -476,6 +522,10 @@ function step(dt) {
   const player = run.players[slot];
   let dx = 0, dy = 0;
   for (const key of held) { const control = CONTROL[key]; if (control) { dx += control[0]; dy += control[1]; } }
+  if (Number.isFinite(run.rotationAngle)) {
+    const world = screenToWorld(dx, dy, run.rotationAngle);
+    dx = world.x; dy = world.y;
+  }
   // Still send movement intent to the server: pushing into a wall counts too.
   if (run.traffic && trafficState(run.traffic, run.elapsed).phase === "red") return;
   if (dx || dy) {
@@ -510,12 +560,20 @@ function frame(now) {
       $("#countdownValue").textContent = remaining > 0 ? String(Math.min(3, Math.ceil(remaining / 1000))) : "GO";
       $("#gamePhase").textContent = remaining > 0 ? "準備開始" : run.quiz ? "答題中 · 計時繼續" : "競速進行中";
       run.elapsed = Math.max(0, -remaining);
+      if (run.rotation) run.rotationAngle = rotationState(run.rotation, run.elapsed, reducedMotion).angle;
       if (remaining <= 0 && currentView === "game" && !run.goalPending) {
         if (!run.quiz) step(dt);
         if (!run.done && now - lastSent > 50) { sendPosition(); lastSent = now; }
       }
     } else $("#gamePhase").textContent = "回合結束";
     $("#clock").textContent = fmt(run.elapsed);
+    if (run.reverse) {
+      canvas.dataset.rotation = "180"; $("#rotationAngle").textContent = "180°";
+    } else if (run.rotation && !run.done) {
+      const signal = rotationState(run.rotation, run.elapsed, reducedMotion);
+      canvas.dataset.rotation = String(signal.degrees);
+      $("#rotationAngle").textContent = `${Math.floor(signal.degrees)}°`;
+    } else delete canvas.dataset.rotation;
     if (run.traffic) {
       const signal = trafficState(run.traffic, run.elapsed), phase = run.done ? "done" : remaining > 0 ? "ready" : signal.phase;
       if (phase !== run.trafficPhase) {
@@ -537,8 +595,10 @@ function frame(now) {
       canvas.dataset.view = scroll ? "scroll" : "overview";
       $("#scrollBadge").hidden = !scroll;
       $("#boardHint").textContent = scroll ? `${String.fromCharCode(69 - Math.floor(localPlayer.room / 5))}${localPlayer.room % 5 + 1} · 王冠位於 E3 ↑` : "A3 出發 → E3 王冠";
+      if (run.rotation && !run.done) $("#boardHint").textContent = `${scroll ? String.fromCharCode(69 - Math.floor(localPlayer.room / 5)) + (localPlayer.room % 5 + 1) + " · " : ""}E3 王冠 · 方向鍵以螢幕為準`;
+      if (run.reverse) $("#boardHint").textContent = `${scroll ? String.fromCharCode(69 - Math.floor(localPlayer.room / 5)) + (localPlayer.room % 5 + 1) + " · " : ""}E3 出發 → A3 王冠 · 固定 180°`;
       const doors = run.showRoutes ? Int8Array.from(DOORS, (_, i) => run.open.has(i) ? 1 : 2) : run.doors;
-      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, paths: run.showRoutes ? run.paths : null, coveredDoors: run.settings.doorMode === "coverage" && !run.showRoutes ? run.coveredDoors : null, goalLocked: run.settings.doorMode === "coverage" && !run.coverageReady && !run.done, flash: run.flash, camera: scroll ? run.camera : null });
+      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, startI: run.startI, goalI: run.goalI, paths: run.showRoutes ? run.paths : null, coveredDoors: run.settings.doorMode === "coverage" && !run.showRoutes ? run.coveredDoors : null, goalLocked: run.settings.doorMode === "coverage" && !run.coverageReady && !run.done, flash: run.flash, rotation: run.rotationAngle, fixedRotation: run.reverse, camera: scroll ? run.camera : null });
     }
   }
   requestAnimationFrame(frame);

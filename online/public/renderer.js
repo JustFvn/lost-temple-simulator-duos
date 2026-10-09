@@ -1,8 +1,9 @@
 import { DOORS } from "./layouts.js";
-import { SCALE, ROOM, WALL, BOARD, PR, START, GOAL, pos, GAPS } from "./geometry.js";
+import { SCALE, ROOM, WALL, BOARD, PR, START_I, GOAL_I, pos, GAPS } from "./geometry.js";
 import { roomCX, roomCY } from "./geometry.js";
 import { VIEW_SIZE } from "./vision.js";
 import { PLAYER_STYLES } from "./players.js";
+import { rotationView } from "./rotation.js";
 const BOARD_THEME = {
   dark: {
     mortar:  "#39443C",
@@ -78,7 +79,13 @@ function paintBoard(ctx, px, st) {
   ctx.save();
   ctx.clearRect(0, 0, px, px);
   ctx.fillStyle = "#050b0d"; ctx.fillRect(0, 0, px, px);
-  if (st.camera) {
+  if (Number.isFinite(st.rotation)) {
+    const { center, scale } = rotationView(st.camera, px, !st.fixedRotation);
+    ctx.translate(px / 2, px / 2);
+    ctx.scale(scale, scale);
+    ctx.rotate(st.rotation);
+    ctx.translate(-center.x, -center.y);
+  } else if (st.camera) {
     ctx.scale(px / VIEW_SIZE, px / VIEW_SIZE);
     ctx.translate(VIEW_SIZE / 2 - st.camera.x, VIEW_SIZE / 2 - st.camera.y);
   } else ctx.scale(px / BOARD, px / BOARD);
@@ -100,11 +107,14 @@ function paintBoard(ctx, px, st) {
     if (st.camera) {
       ctx.font = "12px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "top";
       ctx.fillStyle = "rgba(210,233,217,.4)";
-      ctx.fillText(String.fromCharCode(69 - ((i / 5) | 0)) + (i % 5 + 1), x + 12, y + 12);
+      const label = String.fromCharCode(69 - ((i / 5) | 0)) + (i % 5 + 1);
+      if (st.fixedRotation) {
+        ctx.save(); ctx.translate(x + ROOM - 12, y + ROOM - 12); ctx.rotate(-st.rotation); ctx.fillText(label, 0, 0); ctx.restore();
+      } else ctx.fillText(label, x + 12, y + 12);
     }
   }
 
-  drawGoal(ctx, st.goalLocked);
+  drawGoal(ctx, st.goalLocked, st.goalI ?? GOAL_I, st.fixedRotation ? -st.rotation : 0);
 
   for (let i = 0; i < DOORS.length; i++) {        // 門格
     const g = GAPS[i], state = st.doors[i], ghost = st.ghost ? st.ghost[i] : 0;
@@ -135,18 +145,19 @@ function paintBoard(ctx, px, st) {
     drawPaths(ctx, segments, true);
   }
   if (st.paths) drawPaths(ctx, st.paths);
-  if (st.players) st.players.forEach((p, i) => { if (p) drawPlayer(ctx, p, p.slot ?? i); });
-  else if (st.player) drawPlayer(ctx, st.player, 0);
+  if (st.players) st.players.forEach((p, i) => { if (p) drawPlayer(ctx, p, p.slot ?? i, st.fixedRotation ? -st.rotation : 0); });
+  else if (st.player) drawPlayer(ctx, st.player, 0, st.fixedRotation ? -st.rotation : 0);
 
-  drawStartMark(ctx);
+  drawStartMark(ctx, st.startI ?? START_I);
   ctx.restore();
 }
 
-function drawGoal(ctx, locked = false) {
-  const x = pos(GOAL.c), y = pos(GOAL.r), cx = x + ROOM / 2, cy = y + ROOM / 2;
+function drawGoal(ctx, locked = false, goalI = GOAL_I, markerAngle = 0) {
+  const cx = roomCX(goalI), cy = roomCY(goalI);
 
   ctx.save();                                     // 王冠：三角齒 + 底座
   ctx.translate(cx, cy);
+  ctx.rotate(markerAngle);
   ctx.scale(SCALE, SCALE);
   ctx.fillStyle = locked ? "#8B9992" : C.gold;
   ctx.beginPath();
@@ -161,8 +172,8 @@ function drawGoal(ctx, locked = false) {
   ctx.restore();
 }
 
-function drawStartMark(ctx) {
-  const cx = pos(START.c) + ROOM / 2, cy = pos(START.r) + ROOM / 2;
+function drawStartMark(ctx, startI = START_I) {
+  const cx = roomCX(startI), cy = roomCY(startI);
   ctx.strokeStyle = C.startRing;
   ctx.lineWidth = 1.5;
   ctx.setLineDash([4, 5]);
@@ -201,7 +212,7 @@ function drawPaths(ctx, paths, covered = false) {
   ctx.restore();
 }
 
-function drawPlayer(ctx, p, index) {
+function drawPlayer(ctx, p, index, markerAngle = 0) {
   const color = PLAYER_STYLES[index].color;
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = 5;
@@ -212,7 +223,8 @@ function drawPlayer(ctx, p, index) {
   ctx.fillStyle = "#FFFFFF";
   ctx.font = "bold 11px " + getComputedStyle(document.documentElement).getPropertyValue("--display");
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(String(index + 1), p.x, p.y + .5);
+  ctx.translate(p.x, p.y); ctx.rotate(markerAngle);
+  ctx.fillText(String(index + 1), 0, .5);
   ctx.restore();
 }
 export { paintBoard, syncBoardTheme };

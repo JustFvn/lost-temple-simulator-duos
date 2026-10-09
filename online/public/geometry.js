@@ -1,8 +1,8 @@
 import { DOORS } from "./layouts.js";
 const SCALE = 1.4;
-const ROOM = 140, WALL = 20, DOOR = 84;
+const ROOM = 140, WALL = 20, DOOR = 100;       // 門口原為 84，加寬約 19%，保留兩側實牆
 const BOARD = 5 * ROOM + 6 * WALL;          // 820
-const PR = 10, SPEED = 250 * SCALE;          // 玩家半徑（縮小一點，不隨盤面放大）、移動速度（單位/秒）
+const PR = 10, SPEED = 300;                  // 玩家半徑、移動速度（單位/秒；原為 350，降低約 14%）
 const START = { r: 4, c: 2 }, GOAL = { r: 0, c: 2 };
 const START_I = START.r * 5 + START.c, GOAL_I = GOAL.r * 5 + GOAL.c;
 const A3B3 = [3, 2, 4, 2];                   // 永遠是實牆，不是門
