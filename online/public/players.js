@@ -1,6 +1,15 @@
 import { BOARD } from "./geometry.js";
 
 export const MAX_PLAYERS = 4;
+export const TEAM_STYLES = [
+  { name: "藍隊", color: "#35A7FF" },
+  { name: "紅隊", color: "#FF4F81" },
+];
+export function balancedTeam(players) {
+  const counts = [0, 0];
+  for (const player of players) counts[player.team]++;
+  return counts[0] <= counts[1] ? 0 : 1;
+}
 export const PLAYER_STYLES = [
   { name: "藍色", className: "blue", color: "#35A7FF" },
   { name: "粉色", className: "pink", color: "#FF4F81" },

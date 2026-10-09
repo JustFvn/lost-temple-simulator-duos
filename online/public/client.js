@@ -3,9 +3,10 @@ import { BOARD, ROOM, WALL, PR, SPEED, START_I, GOAL_I, pos, GAPS, allPaths, bui
 import { paintBoard } from "./renderer.js";
 import { cameraTarget, followCamera } from "./vision.js";
 import { trafficState } from "./traffic.js";
-import { MAX_PLAYERS, PLAYER_STYLES } from "./players.js";
+import { MAX_PLAYERS, PLAYER_STYLES, TEAM_STYLES } from "./players.js";
 import { createDpad } from "./touch-controls.js";
 import { rotationState, screenToWorld } from "./rotation.js";
+import { createEliminationClient } from "./elimination-client.js";
 
 const $ = selector => document.querySelector(selector);
 const socket = window.io();
@@ -25,6 +26,7 @@ const CONTROL = { KeyW: [0, -1], ArrowUp: [0, -1], KeyS: [0, 1], ArrowDown: [0, 
 let room = null, slot = -1, run = null, currentView = "home", serverOffset = 0;
 let noticeTimer, settingsTimer, entryBusy = false, starting = false, lastSent = 0;
 const isHost = () => room?.hostId === socket.id;
+const isTeam = () => room?.settings.teamMode === true;
 const fmt = ms => (Math.max(0, ms) / 1000).toFixed(2);
 
 function syncHeld() {
@@ -124,7 +126,7 @@ $("#copyInvite").addEventListener("click", async () => {
 function applySettings(settings) {
   for (const key of ["doorMode", "layoutMode", "drawMode", "fixedLayout", "scoreToWin"]) $(`#${key}`).value = settings[key];
   $("#viewMode").checked = settings.viewMode === "scroll" || settings.viewMode === "fog";
-  for (const key of ["shareDiscovery", "revealAfterRound"]) $(`#${key}`).checked = settings[key];
+  for (const key of ["teamMode", "shareDiscovery", "revealAfterRound"]) $(`#${key}`).checked = Boolean(settings[key]);
   for (const button of document.querySelectorAll("[data-mode]")) {
     const selected = button.dataset.mode === settings.mapMode;
     button.classList.toggle("selected", selected); button.setAttribute("aria-pressed", String(selected));
@@ -132,6 +134,12 @@ function applySettings(settings) {
   syncSettingsDisplay();
 }
 function syncSettingsDisplay() {
+  const elimination = $("#doorMode").value === "elimination";
+  for (const id of ["teamMode", "scoreToWin", "shareDiscovery", "layoutMode", "drawMode"]) $(`#${id}`).disabled = elimination;
+  for (const button of document.querySelectorAll("[data-score]")) button.disabled = elimination;
+  if (elimination) { $("#teamMode").checked = false; $("#shareDiscovery").checked = false; $("#scoreToWin").value = "1"; $("#layoutMode").value = "random"; }
+  const teams = $("#teamMode").checked;
+  $("#winScoreHint").textContent = teams ? "先拿到目標分數的隊伍贏得整場。可輸入 1–99。" : "先拿到目標分數的人贏得整場。可輸入 1–99。";
   const coverage = $("#doorMode").value === "coverage";
   const reverse = $("#doorMode").value === "reverse", officialOnly = coverage || reverse;
   // Choosing this mode switches to official maps; other modes unlock the choice.
@@ -158,7 +166,13 @@ function syncSettingsDisplay() {
     $("#modeDescription").textContent = "逆向神廟限定官方佈局；可隨機抽選或指定官方關卡。";
     $("#doorDescription").textContent = "從原本 E3 終點出發，跑回 A3 起點拿王冠。棋盤固定翻轉 180°，E3 在畫面下方、A3 在上方；不會持續旋轉，方向鍵以螢幕為準。";
   }
-  $("#shareDiscoveryHint").textContent = math ? "答對後共享開關資訊，但每人仍要自己答對才能通過" : "對方發現的真假門，你也看得見";
+  if (elimination) {
+    $("#modeDescription").textContent = generated ? "每人每段獨立生成新路線，兩條通路都能通關；最後兩人使用同一張新迷宮。" : "每人每段抽選不同官方佈局，整場不重複；最後兩人使用同一張新官方迷宮。";
+    $("#doorDescription").textContent = "各自跑獨立 5×5 路線，出口走道直接接下一段，每段淘汰最後一人（晉級名額滿就淘汰尚未到達者）。領先者不必等待，剩下兩人接到共用 5×5 決賽，先拿皇冠獲勝；淘汰者可切換觀戰。";
+    $("#winScoreHint").textContent = "個人淘汰，一場定勝負，不使用隊伍或累積勝利分數。";
+  }
+  $("#shareDiscoveryHint").textContent = teams ? math ? "只向隊友共享開關資訊；每人仍要自己答對才能通過" : "只向隊友共享真假門資訊，不傳給另一隊" : math ? "答對後共享開關資訊，但每人仍要自己答對才能通過" : "對方發現的真假門，你也看得見";
+  if (elimination) $("#shareDiscoveryHint").textContent = "個人賽道不同，不共享門資訊；觀戰可看被觀戰者的探門記錄";
   const fixed = $("#layoutMode").value === "fixed";
   $("#fixedLayoutField").hidden = !fixed; $("#drawModeField").hidden = fixed;
   for (const button of document.querySelectorAll("[data-score]")) button.classList.toggle("selected", button.dataset.score === $("#scoreToWin").value);
@@ -168,7 +182,7 @@ function readSettings() {
     const input = $(`#${id}`);
     if (!input.checkValidity() || !input.value) { input.reportValidity(); throw new Error(id === "scoreToWin" ? "勝利分數請輸入 1–99 的整數。" : "佈局編號請輸入 0–124。"); }
   }
-  return { mapMode: $("#proceduralMode").classList.contains("selected") ? "procedural" : "official", viewMode: $("#viewMode").checked ? "scroll" : "standard", doorMode: $("#doorMode").value, drawMode: $("#drawMode").value, layoutMode: $("#layoutMode").value, fixedLayout: Number($("#fixedLayout").value), scoreToWin: Number($("#scoreToWin").value), shareDiscovery: $("#shareDiscovery").checked, revealAfterRound: $("#revealAfterRound").checked };
+  return { mapMode: $("#proceduralMode").classList.contains("selected") ? "procedural" : "official", viewMode: $("#viewMode").checked ? "scroll" : "standard", doorMode: $("#doorMode").value, teamMode: $("#teamMode").checked, drawMode: $("#drawMode").value, layoutMode: $("#layoutMode").value, fixedLayout: Number($("#fixedLayout").value), scoreToWin: Number($("#scoreToWin").value), shareDiscovery: $("#shareDiscovery").checked, revealAfterRound: $("#revealAfterRound").checked };
 }
 async function saveSettings() {
   clearTimeout(settingsTimer);
@@ -189,6 +203,28 @@ for (const button of document.querySelectorAll("[data-mode]")) button.addEventLi
   queueSettings();
 });
 for (const button of document.querySelectorAll("[data-score]")) button.addEventListener("click", () => { $("#scoreToWin").value = button.dataset.score; queueSettings(); });
+for (let i = 0; i < MAX_PLAYERS; i++) {
+  const select = document.createElement("select");
+  select.id = `seat${i}Team`; select.className = "team-select"; select.hidden = true;
+  TEAM_STYLES.forEach((team, value) => select.add(new Option(team.name, String(value))));
+  $(`#seat${i}`).insertBefore(select, $(`#seat${i}State`));
+  select.addEventListener("change", async () => {
+    const player = room?.players.find(p => p.slot === i);
+    if (!player) return;
+    const team = Number(select.value); select.disabled = true;
+    try { await request("team:choose", { playerId: player.id, team }); }
+    catch (error) { notify(error.message); }
+    finally { if (room) updateRoom(room); }
+  });
+}
+function updateTeamScores(scores = room?.teamScores ?? [0, 0], winnerTeam = -1) {
+  $("#teamScoreboard").hidden = !isTeam();
+  for (let team = 0; team < TEAM_STYLES.length; team++) {
+    $(`#team${team}Score`).textContent = scores[team];
+    $(`#team${team}Members`).textContent = room.players.filter(p => p.team === team).map(p => p.name).join("、") || "尚無隊員";
+    $(`#team${team}Score`).parentElement.classList.toggle("winner", team === winnerTeam);
+  }
+}
 function updateRoom(data) {
   const previousStatus = room?.status;
   room = data; slot = room.players.find(player => player.id === socket.id)?.slot ?? slot;
@@ -196,26 +232,39 @@ function updateRoom(data) {
   $("#roomBadge").textContent = room.code; $("#roomCode").textContent = room.code;
   $("#seatCount").textContent = `${room.players.length} / ${MAX_PLAYERS}`;
   $(".roster-note").textContent = room.settings.doorMode === "reverse" ? "2–4 人共用官方迷宮，從 E3 出發。第一個跑回 A3 王冠房間的人拿下一分。" : "2–4 人共用一張迷宮。至少兩人即可開局，第一個符合玩法條件並進入 E3 王冠房間的人拿下一分。";
+  if (isTeam()) $(".roster-note").textContent = "藍隊 vs 紅隊：任一隊員符合玩法條件並拿到王冠，隊伍就得一分。開局前可自行選隊，房主可調整所有人；換隊會重置比分，兩隊都必須有人。";
+  if (room.settings.doorMode === "elimination") $(".roster-note").textContent = "2–4 人個人淘汰賽：各跑各的不同路線，逐段淘汰最後一人，再由最後兩人在同一張新迷宮決勝。兩人開局直接進入決賽。";
   $("#scoreboard").style.setProperty("--active-players", Math.max(2, room.players.length));
   for (let i = 0; i < MAX_PLAYERS; i++) {
     const player = room.players.find(p => p.slot === i);
     $(`#seat${i}Name`).textContent = player?.name || "等待冒險者";
     $(`#seat${i}`).classList.toggle("empty", !player);
     $(`#seat${i}State`).textContent = player ? "已加入" : "等待中";
+    const select = $(`#seat${i}Team`);
+    select.hidden = !player || !isTeam(); select.value = String(player?.team ?? 0);
+    select.disabled = starting || room.status === "playing" || !player || (!isHost() && player.id !== socket.id);
+    select.setAttribute("aria-label", `${player?.name || `${i + 1}P`}的隊伍`);
+    select.dataset.team = String(player?.team ?? 0);
     $(`#scorePlayer${i}`).hidden = !player;
-    $(`#p${i + 1}Name`).textContent = `${player?.name || "等待中"}${slot === i ? "（你）" : ""}`;
+    $(`#p${i + 1}Name`).textContent = `${player?.name || "等待中"}${slot === i ? "（你）" : ""}${isTeam() && player ? ` · ${TEAM_STYLES[player.team].name}` : ""}`;
+    $(`#p${i + 1}Score`).title = isTeam() ? "個人取得皇冠次數（勝負以隊伍分數為準）" : "個人分數";
+    $(`#p${i + 1}Score`).dataset.unit = isTeam() ? " 冠" : "";
     $(`#p${i + 1}Score`).textContent = room.scores[i];
+    if (room.settings.doorMode !== "elimination") { delete $(`#scorePlayer${i}`).dataset.eliminated; $(`#p${i + 1}Score`).style.fontSize = ""; }
   }
+  updateTeamScores(room.teamScores, run?.done ? run.winnerTeam : -1);
   $("#lobbySubtitle").textContent = isHost() ? "你是房主。選好規則，邀請朋友一起出發。" : "你是挑戰者。房主會設定規則並開始對戰。";
   $("#hostOnlyNote").textContent = isHost() ? "房主設定" : "由房主設定";
   $("#hostSettings").disabled = !isHost() || room.status === "playing";
   $("#settingsNote").textContent = room.status === "playing" ? "回合進行中，設定已鎖定；回合結束後可修改。" : "設定自動同步給對手；修改規則會重置比分。";
   applySettings(room.settings);
-  $("#matchTarget").textContent = `先得 ${room.settings.scoreToWin} 分獲勝`;
-  $("#startRound").disabled = starting || (room.status !== "playing" && (!isHost() || room.players.length < 2));
-  $("#startRound").textContent = room.status === "playing" ? "返回對戰 →" : room.players.length < 2 ? "等待對手加入（至少 2 人）" : isHost() ? (room.roundNumber ? "繼續對戰 →" : `開始 ${room.players.length} 人對戰 →`) : "等待房主開始";
+  $("#matchTarget").textContent = `${isTeam() ? "隊伍" : ""}先得 ${room.settings.scoreToWin} 分獲勝`;
+  if (room.settings.doorMode === "elimination") $("#matchTarget").textContent = "逐段淘汰 · 一場定勝負";
+  const teamsReady = !isTeam() || [0, 1].every(team => room.players.some(p => p.team === team));
+  $("#startRound").disabled = starting || (room.status !== "playing" && (!isHost() || room.players.length < 2 || !teamsReady));
+  $("#startRound").textContent = room.status === "playing" ? "返回對戰 →" : room.players.length < 2 ? "等待對手加入（至少 2 人）" : !teamsReady ? "請讓藍隊與紅隊都有人" : isHost() ? (room.roundNumber ? "繼續對戰 →" : `開始 ${isTeam() ? "兩隊" : room.players.length + " 人"}對戰 →`) : "等待房主開始";
   if (room.status === "lobby" && (run || previousStatus === "ended" || previousStatus === "playing")) {
-    if (previousStatus === "playing") notify("對手已離開，回合已取消、比分已重置。");
+    if (previousStatus === "playing") notify("有玩家離開，回合已取消、比分已重置。");
     clearQuiz(); run = null; blockedControls.clear(); $("#trafficSignal").hidden = true; showView("lobby");
   }
 }
@@ -384,20 +433,36 @@ socket.on("round:start", data => {
     $("#raceTitle").textContent = "紅燈停，綠燈走。";
     $("#raceDescription").textContent = "所有玩家共用燈號，黃燈預告後就要停下。紅燈時按移動鍵也算違規，會被傳回起點；已探過的門保留。";
   }
+  if (data.settings.teamMode) {
+    $("#gameModeLabel").textContent += " · TEAMS";
+    $("#raceDescription").textContent += ` 任一隊員通關就為隊伍加一分。${data.settings.shareDiscovery ? "共享探門只傳給隊友。" : "本場不共享探門情報。"}數學答題與探索進度仍各自完成。`;
+  }
   canvas.setAttribute("aria-label", run.reverse ? "逆向神廟，棋盤固定旋轉180度，從下方 E3 出發，回到上方 A3 拿王冠" : data.rotation ? "旋轉神廟，5×5 棋盤順時針旋轉，方向鍵以螢幕方向為準" : scroll ? "捲軸迷宮，放大鏡頭跟隨你的角色，沒有黑霧遮擋" : "迷宮對戰盤面");
   $("#roundTitle").textContent = `第 ${data.roundNumber} 回合`;
   $("#raceInfo").hidden = false; $("#resultInfo").hidden = true;
   $("#countdown").hidden = false; $("#countdownValue").textContent = "3";
-  $("#yourSeat").textContent = `你是 ${slot + 1}P · ${PLAYER_STYLES[slot].name}`;
+  $("#yourSeat").textContent = `你是 ${slot + 1}P · ${PLAYER_STYLES[slot].name}${data.settings.teamMode ? ` · ${TEAM_STYLES[run.players[slot].team].name}` : ""}`;
   $("#yourSeat").className = `your-seat ${PLAYER_STYLES[slot].className}`;
   for (let i = 0; i < MAX_PLAYERS; i++) { $(`#p${i + 1}Score`).textContent = data.scores[i]; $(`#scorePlayer${i}`).classList.remove("winner"); }
+  updateTeamScores(data.teamScores);
+  $("#eliminationPanel").hidden = !data.elimination;
+  $(".dpad").hidden = false;
+  if (data.elimination) {
+    run.eliminationRace = createEliminationClient({ game: run, slot, canvas, ctx, socket, notify, clearControls, getRoom: () => room });
+    $("#gameModeLabel").textContent = "SEAMLESS ELIMINATION RACE";
+    $("#raceTitle").textContent = "向前跑，別成為最後一人。";
+    $("#raceDescription").textContent = "每人跑不同的 5×5 路線，到 E3 就晉級，往上穿過走道直接進入下一段。每段最後一人淘汰並開放觀戰；領先者可以繼續往前跑，最後兩人在共用新迷宮爭奪王冠。";
+    canvas.setAttribute("aria-label", "無縫淘汰賽道，獨立5乘5迷宮上下銜接，最後兩人共用決賽迷宮");
+  }
   showView("game");
 });
+socket.on("elimination:state", data => { if (run?.eliminationRace && !run.done && data.roundId === run.roundId) run.eliminationRace.update(data); });
+socket.on("elimination:correction", data => { if (run?.eliminationRace && !run.done && data.roundId === run.roundId) run.eliminationRace.correct(data); });
 socket.on("player:state", data => {
   if (!run || run.done || data.roundId !== run.roundId || data.slot === slot) return;
   if (!run.players[data.slot]) return;
   Object.assign(run.players[data.slot], { x: data.x, y: data.y, steps: data.steps });
-  if (run.settings.shareDiscovery) markRoom(run.players[data.slot], false);
+  if (run.settings.shareDiscovery && (!run.settings.teamMode || run.players[data.slot].team === run.players[slot].team)) markRoom(run.players[data.slot], false);
 });
 socket.on("player:reset", data => {
   if (!run || (!run.traffic && run.settings.doorMode !== "coverage") || run.done || data.roundId !== run.roundId) return;
@@ -446,23 +511,32 @@ socket.on("round:end", data => {
   clearQuiz();
   clearTrafficFlash();
   run.done = true; run.elapsed = data.elapsedMs; clearControls();
+  run.eliminationRace?.finish();
   run.rotationAngle = run.reverse ? Math.PI : undefined; $("#rotationSignal").hidden = !run.reverse;
   for (const player of data.players) Object.assign(run.players[player.slot], player);
   run.showRoutes = run.settings.revealAfterRound;
   $("#countdown").hidden = true; $("#raceInfo").hidden = true; $("#resultInfo").hidden = false;
-  const won = data.winner === slot, matchDone = data.matchWinner !== -1;
+  const teams = run.settings.teamMode, won = teams ? data.winnerTeam === run.players[slot].team : data.winner === slot;
+  const matchDone = teams ? data.matchWinnerTeam !== -1 : data.matchWinner !== -1;
+  run.winnerTeam = data.winnerTeam;
   const name = room.players.find(p => p.slot === data.winner)?.name || `${data.winner + 1}P`;
   $("#resultKicker").textContent = matchDone ? "MATCH COMPLETE" : "ROUND COMPLETE";
   $("#resultTitle").textContent = matchDone ? won ? "你贏得整場！" : "對手贏得整場" : won ? "這一分，你的。" : "對手先到一步。";
-  const scores = room.players.slice().sort((a, b) => a.slot - b.slot).map(player => `${player.slot + 1}P ${data.scores[player.slot]}`).join(" / ");
-  $("#resultDescription").textContent = `${name} ${run.reverse ? "先跑回 A3 並取得王冠" : "先抵達王冠"}，${matchDone ? `率先拿下 ${run.settings.scoreToWin} 分。` : `目前比分 ${scores}。`}`;
+  if (teams) $("#resultTitle").textContent = matchDone ? won ? "你的隊伍贏得整場！" : "另一隊贏得整場" : won ? "你的隊伍拿下一分！" : "另一隊先到一步。";
+  const scores = teams ? TEAM_STYLES.map((team, i) => `${team.name} ${data.teamScores[i]}`).join(" / ") : room.players.slice().sort((a, b) => a.slot - b.slot).map(player => `${player.slot + 1}P ${data.scores[player.slot]}`).join(" / ");
+  $("#resultDescription").textContent = `${name} ${run.reverse ? "先跑回 A3 並取得王冠" : "先抵達王冠"}${teams ? `，為${TEAM_STYLES[data.winnerTeam].name}加一分` : ""}，${matchDone ? `${teams ? TEAM_STYLES[data.winnerTeam].name : ""}率先拿下 ${run.settings.scoreToWin} 分。` : `目前比分 ${scores}。`}`;
+  if (data.elimination) {
+    $("#resultTitle").textContent = won ? "你是淘汰賽冠軍！" : `${name} 贏得淘汰賽！`;
+    $("#resultDescription").textContent = `決賽先到 E3 王冠，整場結束。${data.rankings.map(({ slot: playerSlot, rank }) => `第 ${rank} 名：${room.players.find(p => p.slot === playerSlot)?.name || `${playerSlot + 1}P`}`).join(" / ")}`;
+  }
   $("#resultTime").textContent = `${fmt(data.elapsedMs)} 秒`; $("#resultSteps").textContent = `${data.steps} 步`;
   $("#routeStat").hidden = $("#toggleRoutes").hidden = !run.settings.revealAfterRound;
   $("#routeLengths").textContent = `${data.routeLengths?.join(" / ") || "—"} 步`;
   $("#toggleRoutes").textContent = "隱藏路線";
   $("#nextRound").hidden = !isHost(); $("#guestWait").hidden = isHost();
   $("#nextRound").textContent = matchDone ? "再來一場 →" : "下一回合 →";
-  for (let i = 0; i < MAX_PLAYERS; i++) { $(`#p${i + 1}Score`).textContent = data.scores[i]; $(`#scorePlayer${i}`).classList.toggle("winner", i === data.winner); }
+  for (let i = 0; i < MAX_PLAYERS; i++) { $(`#p${i + 1}Score`).textContent = data.scores[i]; $(`#scorePlayer${i}`).classList.toggle("winner", teams ? run.players[i]?.team === data.winnerTeam : i === data.winner); }
+  updateTeamScores(data.teamScores, data.winnerTeam);
   showView("game");
 });
 
@@ -561,12 +635,16 @@ function frame(now) {
       $("#gamePhase").textContent = remaining > 0 ? "準備開始" : run.quiz ? "答題中 · 計時繼續" : "競速進行中";
       run.elapsed = Math.max(0, -remaining);
       if (run.rotation) run.rotationAngle = rotationState(run.rotation, run.elapsed, reducedMotion).angle;
-      if (remaining <= 0 && currentView === "game" && !run.goalPending) {
+      if (!run.eliminationRace && remaining <= 0 && currentView === "game" && !run.goalPending) {
         if (!run.quiz) step(dt);
         if (!run.done && now - lastSent > 50) { sendPosition(); lastSent = now; }
       }
     } else $("#gamePhase").textContent = "回合結束";
     $("#clock").textContent = fmt(run.elapsed);
+    if (run.eliminationRace) {
+      run.eliminationRace.frame({ dt, now, held, controls: CONTROL, play: remaining <= 0 && currentView === "game", draw: currentView === "game", reducedMotion });
+      requestAnimationFrame(frame); return;
+    }
     if (run.reverse) {
       canvas.dataset.rotation = "180"; $("#rotationAngle").textContent = "180°";
     } else if (run.rotation && !run.done) {
@@ -598,7 +676,7 @@ function frame(now) {
       if (run.rotation && !run.done) $("#boardHint").textContent = `${scroll ? String.fromCharCode(69 - Math.floor(localPlayer.room / 5)) + (localPlayer.room % 5 + 1) + " · " : ""}E3 王冠 · 方向鍵以螢幕為準`;
       if (run.reverse) $("#boardHint").textContent = `${scroll ? String.fromCharCode(69 - Math.floor(localPlayer.room / 5)) + (localPlayer.room % 5 + 1) + " · " : ""}E3 出發 → A3 王冠 · 固定 180°`;
       const doors = run.showRoutes ? Int8Array.from(DOORS, (_, i) => run.open.has(i) ? 1 : 2) : run.doors;
-      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, startI: run.startI, goalI: run.goalI, paths: run.showRoutes ? run.paths : null, coveredDoors: run.settings.doorMode === "coverage" && !run.showRoutes ? run.coveredDoors : null, goalLocked: run.settings.doorMode === "coverage" && !run.coverageReady && !run.done, flash: run.flash, rotation: run.rotationAngle, fixedRotation: run.reverse, camera: scroll ? run.camera : null });
+      paintBoard(ctx, canvas.width, { doors, rooms: roomStates(doors, run.visited), visited: run.visited, players: run.players, teamMode: run.settings.teamMode, startI: run.startI, goalI: run.goalI, paths: run.showRoutes ? run.paths : null, coveredDoors: run.settings.doorMode === "coverage" && !run.showRoutes ? run.coveredDoors : null, goalLocked: run.settings.doorMode === "coverage" && !run.coverageReady && !run.done, flash: run.flash, rotation: run.rotationAngle, fixedRotation: run.reverse, camera: scroll ? run.camera : null });
     }
   }
   requestAnimationFrame(frame);

@@ -2,7 +2,7 @@ import { DOORS } from "./layouts.js";
 import { SCALE, ROOM, WALL, BOARD, PR, START_I, GOAL_I, pos, GAPS } from "./geometry.js";
 import { roomCX, roomCY } from "./geometry.js";
 import { VIEW_SIZE } from "./vision.js";
-import { PLAYER_STYLES } from "./players.js";
+import { PLAYER_STYLES, TEAM_STYLES } from "./players.js";
 import { rotationView } from "./rotation.js";
 const BOARD_THEME = {
   dark: {
@@ -145,7 +145,7 @@ function paintBoard(ctx, px, st) {
     drawPaths(ctx, segments, true);
   }
   if (st.paths) drawPaths(ctx, st.paths);
-  if (st.players) st.players.forEach((p, i) => { if (p) drawPlayer(ctx, p, p.slot ?? i, st.fixedRotation ? -st.rotation : 0); });
+  if (st.players) st.players.forEach((p, i) => { if (p) drawPlayer(ctx, p, p.slot ?? i, st.fixedRotation ? -st.rotation : 0, st.teamMode); });
   else if (st.player) drawPlayer(ctx, st.player, 0, st.fixedRotation ? -st.rotation : 0);
 
   drawStartMark(ctx, st.startI ?? START_I);
@@ -212,10 +212,14 @@ function drawPaths(ctx, paths, covered = false) {
   ctx.restore();
 }
 
-function drawPlayer(ctx, p, index, markerAngle = 0) {
+function drawPlayer(ctx, p, index, markerAngle = 0, teamMode = false) {
   const color = PLAYER_STYLES[index].color;
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,.45)"; ctx.shadowBlur = 5;
+  if (teamMode) {
+    ctx.beginPath(); ctx.arc(p.x, p.y, PR + 6, 0, Math.PI * 2);
+    ctx.strokeStyle = TEAM_STYLES[p.team].color; ctx.lineWidth = 3; ctx.stroke();
+  }
   ctx.beginPath(); ctx.arc(p.x, p.y, PR + 2, 0, Math.PI * 2);
   ctx.fillStyle = color; ctx.fill();
   ctx.strokeStyle = "#FFFFFF"; ctx.lineWidth = 2; ctx.stroke();
